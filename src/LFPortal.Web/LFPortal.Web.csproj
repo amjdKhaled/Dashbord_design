@@ -1,6 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <ItemGroup>
+    <Compile Remove="Controllers/DiagnosticsApiController.cs" />
+    <Compile Remove="Controllers/DocumentController.cs" />
+    <Compile Remove="Controllers/LaserficheApiController.cs" />
+    <Compile Remove="Controllers/LaunchController.cs" />
+    <Compile Remove="Controllers/LoginController.cs" />
+    <Compile Remove="Controllers/ShareController.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\LFPortal.Application\LFPortal.Application.csproj" />
     <ProjectReference Include="..\LFPortal.Infrastructure\LFPortal.Infrastructure.csproj" />
   </ItemGroup>
