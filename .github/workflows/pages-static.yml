@@ -1,0 +1,146 @@
+name: Deploy static design to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build demo app
+        run: dotnet build src/LFPortal.Web/LFPortal.Web.csproj --configuration Release
+
+      - name: Generate static design snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ASPNETCORE_ENVIRONMENT=Production \
+            dotnet run \
+              --project src/LFPortal.Web/LFPortal.Web.csproj \
+              --configuration Release \
+              --no-build \
+              --no-launch-profile \
+              --urls 'http://127.0.0.1:5055' > app.log 2>&1 &
+          APP_PID=$!
+          trap 'kill $APP_PID 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in {1..40}; do
+            if curl -fsS 'http://127.0.0.1:5055/health' > /dev/null; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+
+          mkdir -p _site/Archive/Detail _site/Settings
+          curl -fsS 'http://127.0.0.1:5055/Dashboard' -o _site/index.html
+          curl -fsS 'http://127.0.0.1:5055/Archive' -o _site/Archive/index.html
+          curl -fsS 'http://127.0.0.1:5055/Archive/Detail?entryId=9001' -o _site/Archive/Detail/index.html
+          curl -fsS 'http://127.0.0.1:5055/Settings' -o _site/Settings/index.html
+
+          for id in 100 101 102 103 104 105 106 107; do
+            mkdir -p "_site/Archive/folder-$id"
+            curl -fsS "http://127.0.0.1:5055/Archive?entryId=$id&trail=1%3ARepository" \
+              -o "_site/Archive/folder-$id/index.html"
+          done
+
+          cp -R src/LFPortal.Web/wwwroot/. _site/
+          touch _site/.nojekyll
+
+          REPO_NAME="${GITHUB_REPOSITORY#*/}" python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          root = Path('_site')
+          base = '/' + os.environ['REPO_NAME']
+
+          folder_link = re.compile(r'/Archive\?entryId=(10[0-7])(?:&amp;|&)trail=[^"\']*')
+
+          blocker = '''
+          <script>
+          // Static design demo: visual only. No forms or backend requests are submitted.
+          document.addEventListener('submit', function (event) { event.preventDefault(); });
+          </script>
+          '''
+
+          for path in root.rglob('*.html'):
+              text = path.read_text(encoding='utf-8')
+
+              # Make the main navigation work on a GitHub project Pages URL.
+              text = text.replace('href="/Dashboard"', f'href="{base}/"')
+              text = text.replace("href='/Dashboard'", f"href='{base}/'")
+              text = text.replace('href="/Archive"', f'href="{base}/Archive/"')
+              text = text.replace("href='/Archive'", f"href='{base}/Archive/'")
+              text = text.replace('href="/Settings"', f'href="{base}/Settings/"')
+              text = text.replace("href='/Settings'", f"href='{base}/Settings/'")
+              text = text.replace('href="/Login"', f'href="{base}/"')
+              text = text.replace("href='/Login'", f"href='{base}/'")
+
+              # Archive folder links become real static pages.
+              text = folder_link.sub(lambda m: f'{base}/Archive/folder-{m.group(1)}/', text)
+
+              # Any document detail link is visual-only and uses one representative static detail page.
+              text = re.sub(r'/Archive/Detail\?entryId=\d+', f'{base}/Archive/Detail/', text)
+
+              # Prefix root-relative CSS, JS and image assets with the repository Pages base path.
+              text = re.sub(r'((?:href|src)=["\'])/(?!/)', rf'\1{base}/', text)
+
+              # Settings and other forms are intentionally inert in the design-only site.
+              text = re.sub(r'action=["\'][^"\']*["\']', 'action="#"', text)
+
+              if '</body>' in text:
+                  text = text.replace('</body>', blocker + '\n</body>')
+
+              path.write_text(text, encoding='utf-8')
+          PY
+
+          if grep -RniE 'LFRepositoryAPI|LFDSSTS|desktop-k1svi53|localhost:|127\.0\.0\.1:' _site; then
+            echo 'Static output contains a local or Laserfiche endpoint.'
+            exit 1
+          fi
+
+          test -f _site/index.html
+          test -f _site/Archive/index.html
+          test -f _site/Settings/index.html
+          grep -Fq 'TestEmployee' _site/index.html
+          grep -Fq '14 entries' _site/Archive/index.html
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
