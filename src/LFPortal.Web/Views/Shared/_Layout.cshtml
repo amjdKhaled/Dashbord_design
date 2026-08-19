@@ -1,5 +1,3 @@
-@inject Microsoft.Extensions.Options.IOptions<LFPortal.Infrastructure.Options.LaserficheOptions> _lfOpts
-
 @{
     var _uiCulture = System.Globalization.CultureInfo.CurrentUICulture.Name;
     var _isRtl     = _uiCulture.StartsWith("ar", StringComparison.OrdinalIgnoreCase);
@@ -389,8 +387,8 @@
         var _ctrl = ViewContext.RouteData.Values["controller"]?.ToString() ?? "";
         var _sessionRepoId     = Context.Session.GetString("ActiveRepositoryId");
         var _sessionRepoSource = Context.Session.GetString("ActiveRepositorySource");
-        var _displayRepoId     = _sessionRepoId ?? _lfOpts.Value.RepositoryId;
-        var _isDesktop         = _sessionRepoSource == "Laserfiche Desktop Client";
+        var _displayRepoId     = _sessionRepoId ?? "TestEmployee";
+        var _isDesktop         = _sessionRepoSource == "Laserfiche Desktop Client" || _sessionRepoSource is null;
         var _isWebClient       = _sessionRepoSource == "Laserfiche Web Client";
         var _isLaunched        = _isDesktop || _isWebClient;   // any non-direct source
     }
@@ -401,30 +399,11 @@
             @* <img src="~/image/isb_logo.jpg" alt="ISB" class="logo_size" > *@
         </a>
 
-        @* ── Active repository badge ── *@
-        @if (!string.IsNullOrWhiteSpace(_displayRepoId))
-        {
-            var _badgeClass =
-                _isDesktop    ? "repo-badge repo-badge--desktop"    :
-                _isWebClient  ? "repo-badge repo-badge--webclient"  :
-                                "repo-badge";
-            var _dotClass =
-                _isDesktop    ? "repo-badge__dot repo-badge__dot--desktop"    :
-                _isWebClient  ? "repo-badge__dot repo-badge__dot--webclient"  :
-                                "repo-badge__dot";
-            var _srcLabel = _isDesktop ? "DESKTOP" : _isWebClient ? "WEB CLIENT" : null;
-            var _titleSrc = _isDesktop ? "Laserfiche Desktop Client" :
-                            _isWebClient ? "Laserfiche Web Client" :
-                            "Default Configuration";
-            <div class="@_badgeClass" title="Active repository: @_displayRepoId (@_titleSrc)">
-                <span class="@_dotClass"></span>
-                <span class="repo-badge__name">@_displayRepoId</span>
-                @if (_srcLabel is not null)
-                {
-                    <span class="repo-badge__src">@_srcLabel</span>
-                }
-            </div>
-        }
+        <div class="repo-badge repo-badge--desktop" title="Offline demo repository">
+            <span class="repo-badge__dot repo-badge__dot--desktop"></span>
+            <span class="repo-badge__name">TestEmployee</span>
+            <span class="repo-badge__src">DESKTOP</span>
+        </div>
 
         <nav class="site-header__nav" aria-label="Primary navigation">
             @if (_externalShareReadOnly)

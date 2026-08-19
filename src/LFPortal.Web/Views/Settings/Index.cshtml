@@ -16,7 +16,7 @@
         <span>&#10003;</span>
         <div>
             <strong>@L["SettingsSaved"]</strong>
-            All Laserfiche services are now using the updated configuration.
+            Demo values were refreshed locally; no configuration file or service was changed.
         </div>
     </div>
 }
@@ -32,47 +32,16 @@
 <div class="alert alert--info" style="margin-bottom:16px;">
     <span>&#128187;</span>
     <div>
-        <strong>Desktop Client sessions use the Login screen.</strong>
-        When Dashboard is opened from the Laserfiche Desktop Client, users are prompted to
-        sign in on the <strong>Login page</strong> for each repository.
-        No Settings credentials are required for that flow.
-        The credentials below are <strong>fallback / admin credentials</strong> — they are used only
-        when Dashboard is opened directly in a browser (without the Desktop Client).
+        <strong>Offline demo mode is active.</strong>
+        Authentication and repository connections are bypassed. These controls preserve the original layout and only update local demo state.
     </div>
 </div>
 
-@* ── Credential status banner ──────────────────────────────────────────── *@
-@if (Model.HasSavedCredentials)
-{
-    <div class="alert alert--info" style="margin-bottom:16px;">
-        <span>&#128274;</span>
-        <div>
-            <strong>Fallback credentials saved.</strong>
-            These are used for direct browser access only. Leave Username and Password blank to keep them unchanged.
-        </div>
-    </div>
-}
-else if (Model.HasEnvironmentVariableCredentials)
-{
-    <div class="alert alert--amber" style="margin-bottom:16px;">
-        <span>&#8505;</span>
-        <div>
-            <strong>Using environment variable fallback credentials</strong> (<code>LF_USERNAME</code> / <code>LF_PASSWORD</code>).
-            Save credentials here to switch to persistent secure storage (used for direct browser access only).
-        </div>
-    </div>
-}
-else
-{
-    <div class="alert alert--error" style="margin-bottom:16px;">
-        <span>&#9888;</span>
-        <div>
-            <strong>No fallback credentials configured.</strong>
-            Enter a username and password below to enable direct browser access.
-            Desktop Client sessions use the Login page and do not require these credentials.
-        </div>
-    </div>
-}
+@* ── Demo status banner (same original alert component) ──────────────── *@
+<div class="alert alert--info" style="margin-bottom:16px;">
+    <span>&#128274;</span>
+    <div><strong>Authentication bypassed.</strong> No credentials are read, stored, or submitted in this offline demo.</div>
+</div>
 
 @* ── Connection Status section ─────────────────────────────────────────── *@
 @if (Model.ConnectionStatus != null)
@@ -192,11 +161,11 @@ else
                     <label class="field-label" for="ServerUrl">@L["ApiServerUrl"]</label>
                     <input class="field-input" type="text" id="ServerUrl" name="ServerUrl"
                            value="@Model.ServerUrl"
-                           placeholder="https://lf-server.corp.local"
+                           placeholder="Demo Server"
                            autocomplete="off" />
                     <span class="field-hint">
                         Base URL of your Laserfiche API Server — scheme and host only, e.g.
-                        <code>https://lf-server.corp.local</code>.
+                        <code>Demo Server</code>.
                         Do <strong>not</strong> include <code>/LFRepositoryAPI</code> or a version here;
                         use the Advanced fields below. If you paste a full URL the portal will parse it automatically.
                     </span>
@@ -290,19 +259,15 @@ else
                 <div class="field-group">
                     <label class="field-label" for="Username">@L["Username"]</label>
                     <input class="field-input" type="text" id="Username" name="Username"
-                           placeholder="@(Model.HasSavedCredentials ? "Leave blank to keep saved credentials" : "laserfiche-admin")"
-                           autocomplete="username" />
+                           placeholder="Disabled in Demo Mode" disabled
+                           autocomplete="off" />
                 </div>
                 <div class="field-group">
                     <label class="field-label" for="Password">@L["Password"]</label>
                     <input class="field-input" type="password" id="Password" name="Password"
-                           placeholder="@(Model.HasSavedCredentials ? "Leave blank to keep saved credentials" : "Enter password")"
-                           autocomplete="current-password" />
-                    <span class="field-hint">
-                        Stored securely using
-                        @(OperatingSystem.IsWindows() ? "Windows DPAPI (machine-encrypted)" : "ASP.NET Core Data Protection").
-                        Never written to configuration files.
-                    </span>
+                           placeholder="Disabled in Demo Mode" disabled
+                           autocomplete="off" />
+                    <span class="field-hint">Credentials are disabled and never collected by this demo.</span>
                 </div>
             </div>
         </div>
@@ -331,16 +296,12 @@ else
             <span class="status-item__value" style="font-family:monospace;word-break:break-all;">@Model.DashboardPublicBaseUrl</span>
         </div>
         <div class="status-item">
-            <span class="status-item__label">Token URL (current)</span>
-            <span class="status-item__value" style="font-family:monospace;font-size:.75rem;word-break:break-all;">
-                @($"{Model.ServerUrl.TrimEnd('/')}{Model.ApiBasePath}/{Model.EffectiveApiVersion}/Repositories/{(string.IsNullOrWhiteSpace(Model.EffectiveRepositoryId) ? "{RepositoryId}" : Model.EffectiveRepositoryId)}/Token")
-            </span>
+            <span class="status-item__label">Data Source</span>
+            <span class="status-item__value">Mock data (in process)</span>
         </div>
         <div class="status-item">
-            <span class="status-item__label">Repository List URL (current)</span>
-            <span class="status-item__value" style="font-family:monospace;font-size:.75rem;word-break:break-all;">
-                @($"{Model.ServerUrl.TrimEnd('/')}{Model.ApiBasePath}/{Model.EffectiveApiVersion}/Repositories")
-            </span>
+            <span class="status-item__label">Repository Source</span>
+            <span class="status-item__value">Static demo repository</span>
         </div>
         <div class="status-item">
             <span class="status-item__label">API Version</span>
@@ -395,9 +356,7 @@ else
     @if (!Model.SsoEnabled)
     {
         <p style="font-size:.85rem;color:#6b7280;margin-bottom:16px;">
-            SSO is dormant. Set <code>Laserfiche:Sso:LfdsBaseUrl</code> in
-            <code>%ProgramData%\Dashboard\laserfiche.config.json</code> to activate it.
-            Until then users sign in with username and password — no other behaviour changes.
+            Authentication integrations are disabled. Demo Mode does not read machine configuration or contact an identity provider.
         </p>
     }
     else
@@ -470,8 +429,8 @@ else
                 Use these endpoints for monitoring, IIS health probes, and integration verification.
                 <ul style="margin-top:8px;padding-left:16px;display:flex;flex-direction:column;gap:4px;">
                     <li><code style="background:#dbeafe;padding:1px 6px;border-radius:3px;">/health</code> — ASP.NET Core health check (JSON)</li>
-                    <li><code style="background:#dbeafe;padding:1px 6px;border-radius:3px;">/api/laserfiche/status</code> — Live Laserfiche connection status (JSON)</li>
-                    <li><code style="background:#dbeafe;padding:1px 6px;border-radius:3px;">/api/laserfiche/repository</code> — Active repository descriptor (JSON)</li>
+                    <li><code style="background:#dbeafe;padding:1px 6px;border-radius:3px;">/health</code> — Static demo health status (JSON)</li>
+                    <li><code style="background:#dbeafe;padding:1px 6px;border-radius:3px;">/health</code> — Static mock data-source status (JSON)</li>
                 </ul>
             </div>
         </div>
@@ -480,119 +439,16 @@ else
 
 @section Scripts {
 <script>
-(function () {
-    // Chevron animation for <details>
-    var details = document.querySelector('details');
-    var chevron = document.getElementById('adv-chevron');
-    if (details && chevron) {
-        details.addEventListener('toggle', function() {
-            chevron.style.transform = details.open ? 'rotate(90deg)' : '';
-        });
-    }
-
-    // ── Test Connection ──────────────────────────────────────────────────
-    var testBtn  = document.getElementById('test-btn');
-    var resultEl = document.getElementById('test-result');
-    var form     = document.getElementById('settings-form');
-
-    testBtn.addEventListener('click', async function () {
-        testBtn.disabled = true;
-        testBtn.textContent = 'Testing\u2026';
-        resultEl.innerHTML  = '<div class="alert alert--info"><span>\u2139</span><div>Connecting to Laserfiche\u2026</div></div>';
-
-        try {
-            var data  = new FormData(form);
-            var token = form.querySelector('input[name="__RequestVerificationToken"]').value;
-
-            var resp = await fetch('/Settings/TestConnection', {
-                method:  'POST',
-                body:    data,
-                headers: { 'RequestVerificationToken': token }
-            });
-
-            resultEl.innerHTML = await resp.text();
-        } catch (err) {
-            resultEl.innerHTML =
-                '<div class="alert alert--error"><span>\u26a0</span>' +
-                '<div><strong>Request failed:</strong> ' + err.message + '</div></div>';
-        } finally {
-            testBtn.disabled    = false;
-            testBtn.textContent = '\uD83D\uDD0C Test Connection';
-        }
-    });
-
-    // ── Discover Repositories ────────────────────────────────────────────
-    var discoverBtn    = document.getElementById('discover-btn');
-    var repoInput      = document.getElementById('RepositoryId');
-    var discoverStatus = document.getElementById('discover-status');
-
-    discoverBtn.addEventListener('click', async function () {
-        discoverBtn.disabled = true;
-        discoverBtn.textContent = 'Discovering\u2026';
-        discoverStatus.textContent = '';
-        discoverStatus.style.color = '';
-
-        try {
-            var data  = new FormData();
-            var token = form.querySelector('input[name="__RequestVerificationToken"]').value;
-            data.append('__RequestVerificationToken', token);
-            data.append('ServerUrl',    document.getElementById('ServerUrl').value);
-            data.append('ApiBasePath',  document.getElementById('ApiBasePath').value);
-            data.append('RepositoryId', repoInput.value);
-            data.append('Username',     document.getElementById('Username').value);
-            data.append('Password',     document.getElementById('Password').value);
-
-            var resp = await fetch('/Settings/DiscoverRepositories', {
-                method:  'POST',
-                body:    data,
-                headers: { 'RequestVerificationToken': token }
-            });
-
-            var json = await resp.json();
-
-            if (json.error) {
-                discoverStatus.textContent = '\u26a0 ' + json.error;
-                discoverStatus.style.color = '#dc2626';
-                return;
-            }
-
-            var repos = json.repositories || [];
-            if (repos.length === 0) {
-                discoverStatus.textContent = 'No repositories found on this server.';
-                discoverStatus.style.color = '#d97706';
-                return;
-            }
-
-            if (repos.length === 1) {
-                repoInput.value = repos[0].id;
-                discoverStatus.textContent = '\u2713 Found: ' + repos[0].name;
-                discoverStatus.style.color = '#16a34a';
-                return;
-            }
-
-            // Multiple repos — build a small inline select
-            var selectHtml = '<select id="repo-select" class="field-input" style="margin-top:6px;">';
-            repos.forEach(function(r) {
-                selectHtml += '<option value="' + r.id + '">' + r.name + ' (' + r.id + ')</option>';
-            });
-            selectHtml += '</select>';
-            discoverStatus.innerHTML = '\u2713 ' + repos.length + ' repositories found. Select one: ' + selectHtml;
-            discoverStatus.style.color = '#16a34a';
-
-            document.getElementById('repo-select').addEventListener('change', function() {
-                repoInput.value = this.value;
-            });
-            // Pre-fill with first
-            repoInput.value = repos[0].id;
-
-        } catch (err) {
-            discoverStatus.textContent = '\u26a0 Discovery failed: ' + err.message;
-            discoverStatus.style.color = '#dc2626';
-        } finally {
-            discoverBtn.disabled    = false;
-            discoverBtn.textContent = '\uD83D\uDD0D Discover';
-        }
-    });
-}());
+document.getElementById('settings-form')?.addEventListener('submit', function () {
+    // The POST only refreshes this page with the local success banner.
+});
+document.getElementById('test-btn')?.addEventListener('click', function () {
+    document.getElementById('test-result').innerHTML =
+        '<div class="alert alert--success"><span>✓</span><div><strong>Demo Connected</strong> — no server connection was attempted.</div></div>';
+});
+document.getElementById('discover-btn')?.addEventListener('click', function () {
+    document.getElementById('RepositoryId').value = 'TestEmployee';
+    document.getElementById('discover-status').textContent = '1 demo repository available locally.';
+});
 </script>
 }
