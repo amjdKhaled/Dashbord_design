@@ -1,15 +1,14 @@
 using LFPortal.Domain.Version;
 using LFPortal.Web.Authentication;
+using LFPortal.Web.Demo;
 using LFPortal.Infrastructure.Configuration;
 using LFPortal.Infrastructure.Extensions;
 using LFPortal.Infrastructure.Options;
-using LFPortal.Web.Authentication;
 using LFPortal.Web.Middleware;
 using LFPortal.Web.Options;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.Extensions.Options;
 using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Serilog;
 
 // ── Bootstrap logger — captures startup errors before full logging is configured ──
@@ -23,6 +22,11 @@ try
     Log.Information("Starting {Display}", LFPortalVersion.Display);
 
     var builder = WebApplication.CreateBuilder(args);
+    var demoMode = builder.Configuration
+        .GetSection(DemoModeOptions.SectionName)
+        .Get<DemoModeOptions>() ?? new DemoModeOptions();
+    builder.Services.Configure<DemoModeOptions>(
+        builder.Configuration.GetSection(DemoModeOptions.SectionName));
 
     // ── Configuration layering (last-wins) ────────────────────────────────────
     //  1. appsettings.json                                  structural defaults (already loaded)
@@ -31,20 +35,23 @@ try
     //  3. %ProgramData%\Dashboard\laserfiche.config.json    installer wizard values
     //  4. %ProgramData%\Dashboard\laserfiche.runtime.json   Settings-page overrides
     // All are optional with reloadOnChange so Settings-page saves apply without restart.
-    builder.Configuration.AddJsonFile(
-        DashboardConfigPaths.GetLegacyRuntimeConfigPath(builder.Environment.ContentRootPath),
-        optional: true,
-        reloadOnChange: true);
+    if (!demoMode.Enabled)
+    {
+        builder.Configuration.AddJsonFile(
+            DashboardConfigPaths.GetLegacyRuntimeConfigPath(builder.Environment.ContentRootPath),
+            optional: true,
+            reloadOnChange: true);
 
-    builder.Configuration.AddJsonFile(
-        DashboardConfigPaths.InstallerConfigPath,
-        optional: true,
-        reloadOnChange: true);
+        builder.Configuration.AddJsonFile(
+            DashboardConfigPaths.InstallerConfigPath,
+            optional: true,
+            reloadOnChange: true);
 
-    builder.Configuration.AddJsonFile(
-        DashboardConfigPaths.RuntimeConfigPath,
-        optional: true,
-        reloadOnChange: true);
+        builder.Configuration.AddJsonFile(
+            DashboardConfigPaths.RuntimeConfigPath,
+            optional: true,
+            reloadOnChange: true);
+    }
 
     // ── Serilog — replace the default ASP.NET Core logging pipeline ──────────
     builder.Host.UseSerilog((context, services, loggerConfig) =>
@@ -55,26 +62,26 @@ try
             .Enrich.FromLogContext()
             .Enrich.WithProperty("Application", LFPortalVersion.Display);
 
-        // ── Machine-wide diagnostics log — %ProgramData%\Dashboard\Logs ──────
-        // The site-relative logs/ folder may not be writable (or easy to find)
-        // under IIS; this second sink gives administrators a stable location
-        // (C:\ProgramData\Dashboard\Logs on Windows) for [LF AUTH] diagnostics.
-        try
+        if (!context.Configuration.GetValue<bool>("DemoMode:Enabled"))
         {
-            var programDataLogs = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                "Dashboard", "Logs");
-            Directory.CreateDirectory(programDataLogs);
-            loggerConfig.WriteTo.File(
-                Path.Combine(programDataLogs, "dashboard-.log"),
-                rollingInterval: Serilog.RollingInterval.Day,
-                retainedFileCountLimit: 14,
-                outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
-        }
-        catch (Exception ex)
-        {
-            // Never let a log-directory problem prevent startup.
-            Log.Warning(ex, "Could not initialise the ProgramData diagnostics log directory.");
+            // Production-only machine-wide diagnostics log. DemoMode never creates
+            // or writes C:\ProgramData\Dashboard.
+            try
+            {
+                var programDataLogs = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                    "Dashboard", "Logs");
+                Directory.CreateDirectory(programDataLogs);
+                loggerConfig.WriteTo.File(
+                    Path.Combine(programDataLogs, "dashboard-.log"),
+                    rollingInterval: Serilog.RollingInterval.Day,
+                    retainedFileCountLimit: 14,
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not initialise the ProgramData diagnostics log directory.");
+            }
         }
     });
 
@@ -94,42 +101,54 @@ try
     builder.Services.AddLocalization();
 
     // ── MVC ───────────────────────────────────────────────────────────────────
-    builder.Services.AddControllersWithViews()
+    builder.Services.AddControllersWithViews(options =>
+                    {
+                        if (demoMode.Enabled)
+                            options.Filters.Add<DemoSettingsActionFilter>();
+                    })
                     .AddViewLocalization();
 
-    // ── External Share — isolated Repository Password cookie ────────────────
+    // ── External Share / Laserfiche infrastructure ──────────────────────────
     builder.Services.AddOptions<ExternalShareOptions>()
         .Bind(builder.Configuration.GetSection(ExternalShareOptions.SectionName));
-    builder.Services.AddAuthentication()
-        .AddCookie(ExternalShareAuthenticationDefaults.Scheme, options =>
-        {
-            options.Cookie.Name = ExternalShareAuthenticationDefaults.CookieName;
-            options.Cookie.HttpOnly = true;
-            options.Cookie.IsEssential = true;
-            options.Cookie.SameSite = SameSiteMode.Lax;
-            options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-            options.ExpireTimeSpan = TimeSpan.FromHours(2);
-            options.SlidingExpiration = false;
-            options.LoginPath = "/Share/Login";
-            options.AccessDeniedPath = "/Share/Login";
-            options.Events = new CookieAuthenticationEvents
-            {
-                OnRedirectToLogin = context =>
-                {
-                    context.Response.Redirect("/Share/Login");
-                    return Task.CompletedTask;
-                },
-                OnRedirectToAccessDenied = context =>
-                {
-                    context.Response.Redirect("/Share/Login");
-                    return Task.CompletedTask;
-                }
-            };
-        });
-    builder.Services.AddAuthorization();
 
-    // ── Laserfiche Infrastructure layer ───────────────────────────────────────
-    builder.Services.AddLaserficheInfrastructure(builder.Configuration);
+    if (demoMode.Enabled)
+    {
+        // DemoMode deliberately registers mock-only services. No RepositoryPassword,
+        // LFDS/OAuth, token handler, API client, version probe, or credential store is registered.
+        builder.Services.AddDashboardDemoMode();
+    }
+    else
+    {
+        builder.Services.AddAuthentication()
+            .AddCookie(ExternalShareAuthenticationDefaults.Scheme, options =>
+            {
+                options.Cookie.Name = ExternalShareAuthenticationDefaults.CookieName;
+                options.Cookie.HttpOnly = true;
+                options.Cookie.IsEssential = true;
+                options.Cookie.SameSite = SameSiteMode.Lax;
+                options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+                options.ExpireTimeSpan = TimeSpan.FromHours(2);
+                options.SlidingExpiration = false;
+                options.LoginPath = "/Share/Login";
+                options.AccessDeniedPath = "/Share/Login";
+                options.Events = new CookieAuthenticationEvents
+                {
+                    OnRedirectToLogin = context =>
+                    {
+                        context.Response.Redirect("/Share/Login");
+                        return Task.CompletedTask;
+                    },
+                    OnRedirectToAccessDenied = context =>
+                    {
+                        context.Response.Redirect("/Share/Login");
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+        builder.Services.AddAuthorization();
+        builder.Services.AddLaserficheInfrastructure(builder.Configuration);
+    }
 
     // ── HttpContext accessor (used by SessionAwareRepositoryContext) ──────────
     builder.Services.AddHttpContextAccessor();
@@ -149,9 +168,14 @@ try
     // ── Build ─────────────────────────────────────────────────────────────────
     var app = builder.Build();
 
-    // ── Startup diagnostics — log non-secret Laserfiche configuration ────────
-    // Lets administrators immediately verify the API URL, version, and timeout
-    // without reading config files.  Credentials are never logged.
+    // ── Startup diagnostics ─────────────────────────────────────────────────
+    if (demoMode.Enabled)
+    {
+        Log.Information(
+            "DemoMode enabled. Repository={Repository}; real Laserfiche API/auth/config flows are disabled.",
+            DemoDataStore.RepositoryId);
+    }
+    else
     {
         var opts = app.Services.GetRequiredService<IOptions<LaserficheOptions>>().Value;
         var invalidMarkdownKeys = opts.MarkdownConfigurationKeys();
@@ -161,15 +185,9 @@ try
             "Laserfiche config: ServerUrl={ServerUrl} ApiBasePath={ApiBasePath} " +
             "ApiVersion={ApiVersion} (effective: {EffectiveApiVersion}) Timeout={Timeout}s CredentialProvider={Provider} " +
             "FallbackRepository={Repo}",
-            opts.ServerUrl,
-            opts.ApiBasePath,
-            opts.ApiVersion,
-            opts.EffectiveApiVersion,
-            opts.TimeoutSeconds,
-            opts.CredentialProvider,
-            string.IsNullOrEmpty(opts.RepositoryId)
-                ? "(none — login page will prompt)"
-                : opts.RepositoryId);
+            opts.ServerUrl, opts.ApiBasePath, opts.ApiVersion, opts.EffectiveApiVersion,
+            opts.TimeoutSeconds, opts.CredentialProvider,
+            string.IsNullOrEmpty(opts.RepositoryId) ? "(none — login page will prompt)" : opts.RepositoryId);
 
         if (opts.Sso.IsConfigured)
         {
@@ -228,15 +246,23 @@ try
     // ── Session — must be after UseRouting, before controllers ───────────────
     app.UseSession();
 
-    // External Share cookie authentication is independent of LFDS/OAuth.
-    app.UseAuthentication();
-    app.UseAuthorization();
+    if (demoMode.Enabled)
+    {
+        // Safety gate runs before MVC controller activation. Legacy integration/auth/document
+        // routes are redirected and can never execute production services in DemoMode.
+        app.UseMiddleware<DemoRouteSafetyMiddleware>();
+    }
+    else
+    {
+        app.UseAuthentication();
+        app.UseAuthorization();
 
-    // ── Repository session middleware — captures ?repository= from Desktop Client ──
-    app.UseMiddleware<RepositorySessionMiddleware>();
+        // ── Repository session middleware — captures ?repository= from Desktop Client ──
+        app.UseMiddleware<RepositorySessionMiddleware>();
 
-    // ── Session auth guard — redirects unauthenticated Desktop Client sessions to /Login ──
-    app.UseMiddleware<SessionAuthGuardMiddleware>();
+        // ── Session auth guard — redirects unauthenticated Desktop Client sessions to /Login ──
+        app.UseMiddleware<SessionAuthGuardMiddleware>();
+    }
 
     // ── Health check endpoint ─────────────────────────────────────────────────
     app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions

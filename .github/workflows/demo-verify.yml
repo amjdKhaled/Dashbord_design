@@ -1,0 +1,104 @@
+name: Demo verify
+
+on:
+  push:
+    branches:
+      - demo/offline-mock-data-clean
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Check conflict markers
+        shell: bash
+        run: |
+          if git grep -n -E '^(<<<<<<<|=======|>>>>>>>)' -- '*.cs' '*.cshtml' '*.json' '*.html' '*.js' '*.css'; then
+            echo 'Conflict markers found.'
+            exit 1
+          fi
+
+      - name: Build Release
+        run: dotnet build src/LFPortal.Web/LFPortal.Web.csproj --configuration Release
+
+      - name: Smoke test offline demo
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet run --project src/LFPortal.Web/LFPortal.Web.csproj --configuration Release --no-build --urls 'http://127.0.0.1:5055' > app.log 2>&1 &
+          APP_PID=$!
+          trap 'kill $APP_PID 2>/dev/null || true; cat app.log' EXIT
+
+          ready=0
+          for i in {1..40}; do
+            if curl -fsS 'http://127.0.0.1:5055/Dashboard' -o dashboard.html; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = 1
+
+          curl -fsS 'http://127.0.0.1:5055/Archive' -o archive.html
+          curl -fsS 'http://127.0.0.1:5055/Archive?entryId=100&trail=1%3ARepository' -o archive-folder.html
+          curl -fsS 'http://127.0.0.1:5055/Archive/Detail?entryId=9001' -o archive-detail.html
+          curl -fsS 'http://127.0.0.1:5055/Settings' -o settings.html
+          curl -fsSL 'http://127.0.0.1:5055/Login' -o login.html
+
+          python3 - <<'PY'
+          from pathlib import Path
+          from html import unescape
+          for name in ('dashboard.html', 'archive.html', 'archive-folder.html', 'archive-detail.html', 'settings.html', 'login.html'):
+              path = Path(name)
+              path.write_text(unescape(path.read_text()), encoding='utf-8')
+          PY
+
+          check_text() {
+            local needle="$1"
+            local file="$2"
+            grep -Fq "$needle" "$file" || { echo "Missing [$needle] in $file"; exit 1; }
+          }
+
+          check_text 'TestEmployee' dashboard.html
+          check_text 'DESKTOP' dashboard.html
+          check_text 'إدخال الوثيقة' dashboard.html
+          check_text 'SASO (2)' dashboard.html
+          check_text 'Demo User' dashboard.html
+
+          for name in 'إدخال الوثيقة' 'الأرشفة المباشرة للوثائق' 'مركز الوثائق والمحفوظات' 'الموارد البشرية' 'المالية' 'المشاريع' 'العقود' 'المراسلات'; do
+            check_text "$name" archive.html
+          done
+          for name in 'طلب اعتماد موظف.pdf' 'فاتورة مشروع 1042.pdf' 'خطاب رسمي.docx' 'نموذج مراجعة.pdf' 'تقرير شهري.pdf' 'مستند أرشفة.pdf'; do
+            check_text "$name" archive.html
+          done
+          check_text 'طلب اعتماد موظف.pdf' archive-folder.html
+          check_text 'Employee' archive-detail.html
+          check_text 'Demo User' archive-detail.html
+
+          check_text 'Demo Server' settings.html
+          check_text 'TestEmployee' settings.html
+          check_text 'Demo Mode' settings.html
+          check_text 'Demo Connected' settings.html
+          check_text 'TestEmployee' login.html
+
+          login_code="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:5055/Login')"
+          launch_code="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:5055/Launch?repository=TestEmployee&source=webclient')"
+          document_code="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:5055/Document/9001')"
+          test "$login_code" = '302'
+          test "$launch_code" = '302'
+          test "$document_code" = '302'
+
+          if grep -Ei 'https?://[^ ]*(LFRepositoryAPI|LFDSSTS)|desktop-k1svi53' app.log; then
+            echo 'Unexpected real Laserfiche endpoint appeared in demo runtime logs.'
+            exit 1
+          fi
