@@ -77,7 +77,6 @@ jobs:
 
           root = Path('_site')
           base = '/' + os.environ['REPO_NAME']
-
           folder_link = re.compile(r'/Archive\?entryId=(10[0-7])(?:&amp;|&)trail=[^"\']*')
 
           blocker = '''
@@ -90,7 +89,7 @@ jobs:
           for path in root.rglob('*.html'):
               text = path.read_text(encoding='utf-8')
 
-              # Make the main navigation work on a GitHub project Pages URL.
+              # Main navigation between the static design pages.
               text = text.replace('href="/Dashboard"', f'href="{base}/"')
               text = text.replace("href='/Dashboard'", f"href='{base}/'")
               text = text.replace('href="/Archive"', f'href="{base}/Archive/"')
@@ -103,14 +102,20 @@ jobs:
               # Archive folder links become real static pages.
               text = folder_link.sub(lambda m: f'{base}/Archive/folder-{m.group(1)}/', text)
 
-              # Any document detail link is visual-only and uses one representative static detail page.
+              # Document detail is represented by one static sample detail page.
               text = re.sub(r'/Archive/Detail\?entryId=\d+', f'{base}/Archive/Detail/', text)
 
-              # Prefix root-relative CSS, JS and image assets with the repository Pages base path.
-              text = re.sub(r'((?:href|src)=["\'])/(?!/)', rf'\1{base}/', text)
+              # Static assets need the project Pages base path. Route links above are left untouched.
+              text = re.sub(r'(src=["\'])/(?!/)', rf'\1{base}/', text)
+              text = re.sub(
+                  r'(href=["\'])/(css|js|lib|images|img|fonts|favicon)',
+                  rf'\1{base}/\2',
+                  text,
+                  flags=re.IGNORECASE)
 
-              # Settings and other forms are intentionally inert in the design-only site.
+              # Backend-only controls are visual in the static design demo.
               text = re.sub(r'action=["\'][^"\']*["\']', 'action="#"', text)
+              text = re.sub(r'href=["\']/Home/SetLanguage[^"\']*["\']', 'href="#"', text)
 
               if '</body>' in text:
                   text = text.replace('</body>', blocker + '\n</body>')
@@ -128,6 +133,7 @@ jobs:
           test -f _site/Settings/index.html
           grep -Fq 'TestEmployee' _site/index.html
           grep -Fq '14 entries' _site/Archive/index.html
+          grep -Fq '/Dashbord_design/' _site/index.html
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
