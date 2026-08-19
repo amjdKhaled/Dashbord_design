@@ -1,9 +1,9 @@
-name: Demo verify
+name: Internet demo verify
 
 on:
   push:
     branches:
-      - demo/offline-mock-data-clean
+      - demo/internet-ready-hardcoded
   pull_request:
     branches:
       - main
@@ -16,6 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
@@ -28,20 +29,42 @@ jobs:
             exit 1
           fi
 
-      - name: Build Release
-        run: dotnet build src/LFPortal.Web/LFPortal.Web.csproj --configuration Release
-
-      - name: Smoke test offline demo
+      - name: Verify standalone startup has no local Laserfiche wiring
         shell: bash
         run: |
           set -euo pipefail
-          dotnet run --project src/LFPortal.Web/LFPortal.Web.csproj --configuration Release --no-build --urls 'http://127.0.0.1:5055' > app.log 2>&1 &
+          files=(
+            src/LFPortal.Web/Program.cs
+            src/LFPortal.Web/appsettings.json
+            src/LFPortal.Web/appsettings.Development.json
+            src/LFPortal.Web/Properties/launchSettings.json
+          )
+          forbidden='LFRepositoryAPI|LFDSSTS|RepositoryPassword|DashboardConfigPaths|AddLaserficheInfrastructure|RepositorySessionMiddleware|SessionAuthGuardMiddleware|desktop-k1svi53|C:\\ProgramData'
+          if grep -nEi "$forbidden" "${files[@]}"; then
+            echo 'Standalone startup/config still contains production or machine-local wiring.'
+            exit 1
+          fi
+
+      - name: Build Release
+        run: dotnet build src/LFPortal.Web/LFPortal.Web.csproj --configuration Release
+
+      - name: Smoke test standalone demo in Production mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          ASPNETCORE_ENVIRONMENT=Production \
+            dotnet run \
+              --project src/LFPortal.Web/LFPortal.Web.csproj \
+              --configuration Release \
+              --no-build \
+              --no-launch-profile \
+              --urls 'http://127.0.0.1:5055' > app.log 2>&1 &
           APP_PID=$!
           trap 'kill $APP_PID 2>/dev/null || true; cat app.log' EXIT
 
           ready=0
           for i in {1..40}; do
-            if curl -fsS 'http://127.0.0.1:5055/Dashboard' -o dashboard.html; then
+            if curl -fsS 'http://127.0.0.1:5055/health' -o health.json; then
               ready=1
               break
             fi
@@ -49,6 +72,8 @@ jobs:
           done
           test "$ready" = 1
 
+          curl -fsS 'http://127.0.0.1:5055/' -o root.html
+          curl -fsS 'http://127.0.0.1:5055/Dashboard' -o dashboard.html
           curl -fsS 'http://127.0.0.1:5055/Archive' -o archive.html
           curl -fsS 'http://127.0.0.1:5055/Archive?entryId=100&trail=1%3ARepository' -o archive-folder.html
           curl -fsS 'http://127.0.0.1:5055/Archive/Detail?entryId=9001' -o archive-detail.html
@@ -58,7 +83,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
           from html import unescape
-          for name in ('dashboard.html', 'archive.html', 'archive-folder.html', 'archive-detail.html', 'settings.html', 'login.html'):
+          for name in ('root.html', 'dashboard.html', 'archive.html', 'archive-folder.html', 'archive-detail.html', 'settings.html', 'login.html'):
               path = Path(name)
               path.write_text(unescape(path.read_text()), encoding='utf-8')
           PY
@@ -69,6 +94,7 @@ jobs:
             grep -Fq "$needle" "$file" || { echo "Missing [$needle] in $file"; exit 1; }
           }
 
+          check_text 'TestEmployee' root.html
           check_text 'TestEmployee' dashboard.html
           check_text 'DESKTOP' dashboard.html
           check_text 'إدخال الوثيقة' dashboard.html
@@ -78,18 +104,19 @@ jobs:
           for name in 'إدخال الوثيقة' 'الأرشفة المباشرة للوثائق' 'مركز الوثائق والمحفوظات' 'الموارد البشرية' 'المالية' 'المشاريع' 'العقود' 'المراسلات'; do
             check_text "$name" archive.html
           done
+
           for name in 'طلب اعتماد موظف.pdf' 'فاتورة مشروع 1042.pdf' 'خطاب رسمي.docx' 'نموذج مراجعة.pdf' 'تقرير شهري.pdf' 'مستند أرشفة.pdf'; do
             check_text "$name" archive.html
           done
+
           check_text 'طلب اعتماد موظف.pdf' archive-folder.html
           check_text 'Employee' archive-detail.html
           check_text 'Demo User' archive-detail.html
-
           check_text 'Demo Server' settings.html
-          check_text 'TestEmployee' settings.html
           check_text 'Demo Mode' settings.html
           check_text 'Demo Connected' settings.html
           check_text 'TestEmployee' login.html
+          check_text 'Hardcoded' health.json
 
           login_code="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:5055/Login')"
           launch_code="$(curl -sS -o /dev/null -w '%{http_code}' 'http://127.0.0.1:5055/Launch?repository=TestEmployee&source=webclient')"
@@ -98,7 +125,10 @@ jobs:
           test "$launch_code" = '302'
           test "$document_code" = '302'
 
-          if grep -Ei 'https?://[^ ]*(LFRepositoryAPI|LFDSSTS)|desktop-k1svi53' app.log; then
-            echo 'Unexpected real Laserfiche endpoint appeared in demo runtime logs.'
+          if grep -Ei 'https?://[^ ]*(LFRepositoryAPI|LFDSSTS)|desktop-k1svi53|C:\\ProgramData' app.log; then
+            echo 'Unexpected real Laserfiche or machine-local endpoint/path appeared in runtime logs.'
             exit 1
           fi
+
+      - name: Build deploy container
+        run: docker build -t dashboard-internet-demo .

@@ -3,34 +3,32 @@ using LFPortal.Web.Controllers;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Mvc.ModelBinding;
-using Microsoft.Extensions.Options;
 
 namespace LFPortal.Web.Demo;
 
 /// <summary>
-/// Keeps the existing Settings Razor page/controller intact while making its mutable
-/// actions demo-safe. The filter runs only when DemoMode is enabled.
+/// Keeps the existing Settings Razor page/controller intact while making every mutable
+/// action permanently demo-safe. This repository is a standalone internet demo only.
 /// </summary>
 internal sealed class DemoSettingsActionFilter : IAsyncActionFilter
 {
-    private readonly IOptions<DemoModeOptions> _demoMode;
     private readonly IModelMetadataProvider _metadataProvider;
     private readonly ILogger<DemoSettingsActionFilter> _logger;
 
     public DemoSettingsActionFilter(
-        IOptions<DemoModeOptions> demoMode,
         IModelMetadataProvider metadataProvider,
         ILogger<DemoSettingsActionFilter> logger)
     {
-        _demoMode = demoMode;
         _metadataProvider = metadataProvider;
         _logger = logger;
     }
 
     public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
-        if (!_demoMode.Value.Enabled ||
-            !string.Equals(context.RouteData.Values["controller"]?.ToString(), "Settings", StringComparison.OrdinalIgnoreCase))
+        if (!string.Equals(
+                context.RouteData.Values["controller"]?.ToString(),
+                "Settings",
+                StringComparison.OrdinalIgnoreCase))
         {
             await next();
             return;
@@ -43,7 +41,7 @@ internal sealed class DemoSettingsActionFilter : IAsyncActionFilter
         {
             var saved = context.HttpContext.Request.Query.TryGetValue("saved", out var savedValue) &&
                         bool.TryParse(savedValue.ToString(), out var isSaved) && isSaved;
-            var status = CreateDemoConnectionStatus();
+
             context.Result = new ViewResult
             {
                 ViewName = "Index",
@@ -66,7 +64,7 @@ internal sealed class DemoSettingsActionFilter : IAsyncActionFilter
                         HasSavedCredentials = false,
                         HasEnvironmentVariableCredentials = false,
                         SaveSuccess = saved,
-                        ConnectionStatus = status,
+                        ConnectionStatus = CreateDemoConnectionStatus(),
                         ActiveRepositoryId = DemoDataStore.RepositoryId,
                         ActiveRepositorySource = "Laserfiche Desktop Client",
                         AuthenticationMode = "Demo Mode",
@@ -86,15 +84,17 @@ internal sealed class DemoSettingsActionFilter : IAsyncActionFilter
         {
             if (string.Equals(action, nameof(SettingsController.Save), StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogInformation("DemoMode Settings Save: simulated success; no configuration or credentials were written.");
-                context.Result = new RedirectToActionResult(nameof(SettingsController.Index), "Settings", new { saved = true });
+                _logger.LogInformation("Demo Settings Save: simulated success; nothing was written to disk or a server.");
+                context.Result = new RedirectToActionResult(
+                    nameof(SettingsController.Index),
+                    "Settings",
+                    new { saved = true });
                 return;
             }
 
             if (string.Equals(action, nameof(SettingsController.TestConnection), StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogInformation("DemoMode TestConnection: simulated success; no server call was performed.");
-                var status = CreateDemoConnectionStatus();
+                _logger.LogInformation("Demo TestConnection: simulated success; no network request was made.");
                 context.Result = new PartialViewResult
                 {
                     ViewName = "_TestResult",
@@ -102,7 +102,7 @@ internal sealed class DemoSettingsActionFilter : IAsyncActionFilter
                         _metadataProvider,
                         context.ModelState)
                     {
-                        Model = status
+                        Model = CreateDemoConnectionStatus()
                     }
                 };
                 return;
@@ -110,7 +110,7 @@ internal sealed class DemoSettingsActionFilter : IAsyncActionFilter
 
             if (string.Equals(action, nameof(SettingsController.DiscoverRepositories), StringComparison.OrdinalIgnoreCase))
             {
-                _logger.LogInformation("DemoMode DiscoverRepositories: returning mock repositories only.");
+                _logger.LogInformation("Demo DiscoverRepositories: returning hardcoded repositories only.");
                 context.Result = new JsonResult(new
                 {
                     repositories = new[]

@@ -1,59 +1,21 @@
 using LFPortal.Domain.Version;
-using LFPortal.Web.Authentication;
 using LFPortal.Web.Demo;
-using LFPortal.Infrastructure.Configuration;
-using LFPortal.Infrastructure.Extensions;
-using LFPortal.Infrastructure.Options;
-using LFPortal.Web.Middleware;
-using LFPortal.Web.Options;
-using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.Extensions.Options;
-using Microsoft.AspNetCore.Authentication;
 using Serilog;
 
-// ── Bootstrap logger — captures startup errors before full logging is configured ──
+// This copied repository is intentionally a permanent standalone demo.
+// It never registers or executes Laserfiche/LFDS/OAuth/SSO production services.
 Log.Logger = new LoggerConfiguration()
-    .MinimumLevel.Warning()
+    .MinimumLevel.Information()
     .WriteTo.Console()
     .CreateBootstrapLogger();
 
 try
 {
-    Log.Information("Starting {Display}", LFPortalVersion.Display);
+    Log.Information("Starting {Display} in standalone demo mode", LFPortalVersion.Display);
 
     var builder = WebApplication.CreateBuilder(args);
-    var demoMode = builder.Configuration
-        .GetSection(DemoModeOptions.SectionName)
-        .Get<DemoModeOptions>() ?? new DemoModeOptions();
-    builder.Services.Configure<DemoModeOptions>(
-        builder.Configuration.GetSection(DemoModeOptions.SectionName));
 
-    // ── Configuration layering (last-wins) ────────────────────────────────────
-    //  1. appsettings.json                                  structural defaults (already loaded)
-    //  2. <ContentRoot>\config\laserfiche.json              LEGACY writable file (pre-Phase-1
-    //                                                       installs and non-Windows dev fallback)
-    //  3. %ProgramData%\Dashboard\laserfiche.config.json    installer wizard values
-    //  4. %ProgramData%\Dashboard\laserfiche.runtime.json   Settings-page overrides
-    // All are optional with reloadOnChange so Settings-page saves apply without restart.
-    if (!demoMode.Enabled)
-    {
-        builder.Configuration.AddJsonFile(
-            DashboardConfigPaths.GetLegacyRuntimeConfigPath(builder.Environment.ContentRootPath),
-            optional: true,
-            reloadOnChange: true);
-
-        builder.Configuration.AddJsonFile(
-            DashboardConfigPaths.InstallerConfigPath,
-            optional: true,
-            reloadOnChange: true);
-
-        builder.Configuration.AddJsonFile(
-            DashboardConfigPaths.RuntimeConfigPath,
-            optional: true,
-            reloadOnChange: true);
-    }
-
-    // ── Serilog — replace the default ASP.NET Core logging pipeline ──────────
+    // Host-friendly logging only. No machine-wide or ProgramData file writes.
     builder.Host.UseSerilog((context, services, loggerConfig) =>
     {
         loggerConfig
@@ -61,156 +23,34 @@ try
             .ReadFrom.Services(services)
             .Enrich.FromLogContext()
             .Enrich.WithProperty("Application", LFPortalVersion.Display);
-
-        if (!context.Configuration.GetValue<bool>("DemoMode:Enabled"))
-        {
-            // Production-only machine-wide diagnostics log. DemoMode never creates
-            // or writes C:\ProgramData\Dashboard.
-            try
-            {
-                var programDataLogs = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
-                    "Dashboard", "Logs");
-                Directory.CreateDirectory(programDataLogs);
-                loggerConfig.WriteTo.File(
-                    Path.Combine(programDataLogs, "dashboard-.log"),
-                    rollingInterval: Serilog.RollingInterval.Day,
-                    retainedFileCountLimit: 14,
-                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff zzz} [{Level:u3}] {SourceContext}: {Message:lj}{NewLine}{Exception}");
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Could not initialise the ProgramData diagnostics log directory.");
-            }
-        }
     });
 
-    // ── IIS integration ───────────────────────────────────────────────────────
-    builder.Services.Configure<IISServerOptions>(opts =>
-    {
-        opts.AutomaticAuthentication = false;
-    });
-
-    // ── ASP.NET Core Data Protection (cross-platform credential encryption) ───
-    builder.Services.AddDataProtection();
-
-    // ── Localization — Arabic (ar) + English (en, default) ────────────────────
-    // No ResourcesPath: the RESX in Resources/SharedResource.resx has a C# codebehind
-    // (SharedResource.cs) in namespace LFPortal.Web, so MSBuild embeds the binary resource
-    // as "LFPortal.Web.SharedResource".  ResourcesPath="" keeps the lookup consistent.
     builder.Services.AddLocalization();
 
-    // ── MVC ───────────────────────────────────────────────────────────────────
+    // Keep the existing Razor UI and controllers exactly as they are.
+    // Settings mutations are intercepted by the demo-safe action filter.
     builder.Services.AddControllersWithViews(options =>
-                    {
-                        if (demoMode.Enabled)
-                            options.Filters.Add<DemoSettingsActionFilter>();
-                    })
-                    .AddViewLocalization();
+        {
+            options.Filters.Add<DemoSettingsActionFilter>();
+        })
+        .AddViewLocalization();
 
-    // ── External Share / Laserfiche infrastructure ──────────────────────────
-    builder.Services.AddOptions<ExternalShareOptions>()
-        .Bind(builder.Configuration.GetSection(ExternalShareOptions.SectionName));
-
-    if (demoMode.Enabled)
-    {
-        // DemoMode deliberately registers mock-only services. No RepositoryPassword,
-        // LFDS/OAuth, token handler, API client, version probe, or credential store is registered.
-        builder.Services.AddDashboardDemoMode();
-    }
-    else
-    {
-        builder.Services.AddAuthentication()
-            .AddCookie(ExternalShareAuthenticationDefaults.Scheme, options =>
-            {
-                options.Cookie.Name = ExternalShareAuthenticationDefaults.CookieName;
-                options.Cookie.HttpOnly = true;
-                options.Cookie.IsEssential = true;
-                options.Cookie.SameSite = SameSiteMode.Lax;
-                options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
-                options.ExpireTimeSpan = TimeSpan.FromHours(2);
-                options.SlidingExpiration = false;
-                options.LoginPath = "/Share/Login";
-                options.AccessDeniedPath = "/Share/Login";
-                options.Events = new CookieAuthenticationEvents
-                {
-                    OnRedirectToLogin = context =>
-                    {
-                        context.Response.Redirect("/Share/Login");
-                        return Task.CompletedTask;
-                    },
-                    OnRedirectToAccessDenied = context =>
-                    {
-                        context.Response.Redirect("/Share/Login");
-                        return Task.CompletedTask;
-                    }
-                };
-            });
-        builder.Services.AddAuthorization();
-        builder.Services.AddLaserficheInfrastructure(builder.Configuration);
-    }
-
-    // ── HttpContext accessor (used by SessionAwareRepositoryContext) ──────────
+    // Register hardcoded/mock services only.
+    builder.Services.AddDashboardDemoMode();
     builder.Services.AddHttpContextAccessor();
-
-    // ── Session — stores the active repository when opened from the Desktop Client ──
     builder.Services.AddDistributedMemoryCache();
-    builder.Services.AddSession(opts =>
+    builder.Services.AddSession(options =>
     {
-        opts.Cookie.HttpOnly  = true;
-        opts.Cookie.IsEssential = true;
-        opts.IdleTimeout      = TimeSpan.FromHours(8);
-        opts.Cookie.Name      = ".Dashboard.Session";
-        opts.Cookie.SameSite  = SameSiteMode.Lax;
-        opts.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.Cookie.HttpOnly = true;
+        options.Cookie.IsEssential = true;
+        options.Cookie.Name = ".Dashboard.Demo.Session";
+        options.Cookie.SameSite = SameSiteMode.Lax;
+        options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
+        options.IdleTimeout = TimeSpan.FromHours(8);
     });
 
-    // ── Build ─────────────────────────────────────────────────────────────────
     var app = builder.Build();
 
-    // ── Startup diagnostics ─────────────────────────────────────────────────
-    if (demoMode.Enabled)
-    {
-        Log.Information(
-            "DemoMode enabled. Repository={Repository}; real Laserfiche API/auth/config flows are disabled.",
-            DemoDataStore.RepositoryId);
-    }
-    else
-    {
-        var opts = app.Services.GetRequiredService<IOptions<LaserficheOptions>>().Value;
-        var invalidMarkdownKeys = opts.MarkdownConfigurationKeys();
-        if (invalidMarkdownKeys.Count > 0)
-            Log.Fatal("Invalid Markdown characters in URL configuration: {ConfigurationKeys}", invalidMarkdownKeys);
-        Log.Information(
-            "Laserfiche config: ServerUrl={ServerUrl} ApiBasePath={ApiBasePath} " +
-            "ApiVersion={ApiVersion} (effective: {EffectiveApiVersion}) Timeout={Timeout}s CredentialProvider={Provider} " +
-            "FallbackRepository={Repo}",
-            opts.ServerUrl, opts.ApiBasePath, opts.ApiVersion, opts.EffectiveApiVersion,
-            opts.TimeoutSeconds, opts.CredentialProvider,
-            string.IsNullOrEmpty(opts.RepositoryId) ? "(none — login page will prompt)" : opts.RepositoryId);
-
-        if (opts.Sso.IsConfigured)
-        {
-            Log.Information(
-                "SSO config: LfdsBaseUrl={LfdsBaseUrl} ClientId={ClientId} " +
-                "DashboardPublicBaseUrl={DashboardPublicBaseUrl} CallbackUrl={CallbackUrl} " +
-                "AuthEndpoint={AuthEndpoint} TokenEndpoint={TokenEndpoint} LFDSSTS={LfdsSts} Repository={Repository}",
-                opts.Sso.LfdsBaseUrl,
-                opts.Sso.ClientId,
-                opts.DashboardPublicBaseUrl,
-                opts.SsoCallbackUrl,
-                opts.SsoAuthorizationEndpoint,
-                opts.GetSsoTokenEndpoint(opts.RepositoryId),
-                opts.Sso.LfdsBaseUrl,
-                opts.RepositoryId);
-        }
-        else
-        {
-            Log.Information("SSO config: LFDS SSO is not configured (Laserfiche:Sso:LfdsBaseUrl is empty).");
-        }
-    }
-
-    // ── Error handling ────────────────────────────────────────────────────────
     if (app.Environment.IsDevelopment())
     {
         app.UseDeveloperExceptionPage();
@@ -221,66 +61,45 @@ try
         app.UseHsts();
     }
 
-    // ── Serilog HTTP request logging ──────────────────────────────────────────
-    app.UseSerilogRequestLogging(opts =>
+    app.UseSerilogRequestLogging(options =>
     {
-        opts.MessageTemplate =
+        options.MessageTemplate =
             "HTTP {RequestMethod} {RequestPath} responded {StatusCode} in {Elapsed:0.0000}ms";
     });
 
-    // ── Static files ──────────────────────────────────────────────────────────
     app.UseStaticFiles();
 
-    // ── Request localization — culture cookie sets en / ar ────────────────────
-    {
-        var supported = new[] { "en", "ar" };
-        app.UseRequestLocalization(new RequestLocalizationOptions()
-            .SetDefaultCulture("en")
-            .AddSupportedCultures(supported)
-            .AddSupportedUICultures(supported));
-    }
+    var supportedCultures = new[] { "en", "ar" };
+    app.UseRequestLocalization(new RequestLocalizationOptions()
+        .SetDefaultCulture("en")
+        .AddSupportedCultures(supportedCultures)
+        .AddSupportedUICultures(supportedCultures));
 
-    // ── Routing ───────────────────────────────────────────────────────────────
     app.UseRouting();
-
-    // ── Session — must be after UseRouting, before controllers ───────────────
     app.UseSession();
 
-    if (demoMode.Enabled)
-    {
-        // Safety gate runs before MVC controller activation. Legacy integration/auth/document
-        // routes are redirected and can never execute production services in DemoMode.
-        app.UseMiddleware<DemoRouteSafetyMiddleware>();
-    }
-    else
-    {
-        app.UseAuthentication();
-        app.UseAuthorization();
+    // Blocks all legacy integration/auth/document routes before controller activation.
+    app.UseMiddleware<DemoRouteSafetyMiddleware>();
 
-        // ── Repository session middleware — captures ?repository= from Desktop Client ──
-        app.UseMiddleware<RepositorySessionMiddleware>();
-
-        // ── Session auth guard — redirects unauthenticated Desktop Client sessions to /Login ──
-        app.UseMiddleware<SessionAuthGuardMiddleware>();
-    }
-
-    // ── Health check endpoint ─────────────────────────────────────────────────
     app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
     {
         ResponseWriter = WriteHealthResponseAsync
     });
 
-    // ── MVC routes — default lands on the Dashboard ──────────────────────────
     app.MapControllerRoute(
         name: "default",
         pattern: "{controller=Dashboard}/{action=Index}/{id?}");
 
-    Log.Information("{Display} started successfully.", LFPortalVersion.Display);
+    Log.Information(
+        "{Display} started. Repository={Repository}; data source=hardcoded demo data",
+        LFPortalVersion.Display,
+        DemoDataStore.RepositoryId);
+
     await app.RunAsync();
 }
 catch (Exception ex) when (ex is not OperationCanceledException && ex.GetType().Name != "HostAbortedException")
 {
-    Log.Fatal(ex, "{Display} terminated unexpectedly.", LFPortalVersion.Display);
+    Log.Fatal(ex, "{Display} terminated unexpectedly", LFPortalVersion.Display);
     return 1;
 }
 finally
@@ -290,40 +109,38 @@ finally
 
 return 0;
 
-// ── Health check JSON writer ──────────────────────────────────────────────────
-
 static async Task WriteHealthResponseAsync(
-    HttpContext ctx,
+    HttpContext context,
     Microsoft.Extensions.Diagnostics.HealthChecks.HealthReport report)
 {
-    ctx.Response.ContentType = "application/json; charset=utf-8";
-
-    var entries = report.Entries.Select(e => new
-    {
-        name        = e.Key,
-        status      = e.Value.Status.ToString(),
-        description = e.Value.Description,
-        duration    = e.Value.Duration.TotalMilliseconds,
-        data        = e.Value.Data
-    });
+    context.Response.ContentType = "application/json; charset=utf-8";
 
     var payload = new
     {
-        version       = LFPortalVersion.Full,
-        status        = report.Status.ToString(),
+        version = LFPortalVersion.Full,
+        mode = "Standalone Demo",
+        dataSource = "Hardcoded",
+        repository = DemoDataStore.RepositoryId,
+        status = report.Status.ToString(),
         totalDuration = report.TotalDuration.TotalMilliseconds,
-        entries
+        entries = report.Entries.Select(entry => new
+        {
+            name = entry.Key,
+            status = entry.Value.Status.ToString(),
+            description = entry.Value.Description,
+            duration = entry.Value.Duration.TotalMilliseconds
+        })
     };
 
     var json = System.Text.Json.JsonSerializer.Serialize(payload, new System.Text.Json.JsonSerializerOptions
     {
-        PropertyNamingPolicy         = System.Text.Json.JsonNamingPolicy.CamelCase,
-        WriteIndented                = true,
-        DefaultIgnoreCondition       = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     });
 
-    ctx.Response.StatusCode = report.Status ==
+    context.Response.StatusCode = report.Status ==
         Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Healthy ? 200 : 503;
 
-    await ctx.Response.WriteAsync(json);
+    await context.Response.WriteAsync(json);
 }
