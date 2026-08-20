@@ -30,7 +30,7 @@ jobs:
       - name: Build demo app
         run: dotnet build src/LFPortal.Web/LFPortal.Web.csproj --configuration Release
 
-      - name: Generate English and Arabic static design snapshots
+      - name: Generate complete English and Arabic static demo
         shell: bash
         run: |
           set -euo pipefail
@@ -66,11 +66,24 @@ jobs:
             local out="$1"
             local cookie="$2"
 
-            mkdir -p "$out/Archive/Detail" "$out/Settings"
-            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Dashboard' -o "$out/index.html"
-            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Archive' -o "$out/Archive/index.html"
-            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Archive/Detail?entryId=9001' -o "$out/Archive/Detail/index.html"
-            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Settings' -o "$out/Settings/index.html"
+            mkdir -p \
+              "$out/Dashboard/Probe" \
+              "$out/Archive/Detail" \
+              "$out/Settings/saved"
+
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Dashboard' \
+              -o "$out/index.html"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Archive' \
+              -o "$out/Archive/index.html"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Dashboard/Probe' \
+              -o "$out/Dashboard/Probe/index.html"
+
+            # Keep the antiforgery cookie emitted by the Settings page so the
+            # existing demo-safe POST actions can be snapshotted too.
+            curl -fsS -b "$cookie" -c "$cookie" 'http://127.0.0.1:5055/Settings' \
+              -o "$out/Settings/index.html"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Settings?saved=true' \
+              -o "$out/Settings/saved/index.html"
 
             for id in 100 101 102 103 104 105 106 107; do
               mkdir -p "$out/Archive/folder-$id"
@@ -82,6 +95,74 @@ jobs:
 
           snapshot '_site' 'en.cookies'
           snapshot '_site/ar' 'ar.cookies'
+
+          # Preserve the existing Archive detail-panel behavior exactly: every
+          # document shown by the mock archive gets its own static partial. The
+          # browser will fetch the matching partial by entry ID instead of calling
+          # ASP.NET at runtime.
+          DOC_IDS=$(grep -RhoE 'data-entry-id="[0-9]+"' \
+            _site/Archive/index.html _site/Archive/folder-*/index.html \
+            | grep -oE '[0-9]+' | sort -nu | tr '\n' ' ')
+          test -n "$DOC_IDS"
+
+          for id in $DOC_IDS; do
+            curl -fsS -b en.cookies \
+              "http://127.0.0.1:5055/Archive/Detail?entryId=$id" \
+              -o "_site/Archive/Detail/$id.html"
+            curl -fsS -b ar.cookies \
+              "http://127.0.0.1:5055/Archive/Detail?entryId=$id" \
+              -o "_site/ar/Archive/Detail/$id.html"
+          done
+
+          # Snapshot the two existing Settings AJAX actions. They are already
+          # intercepted by DemoSettingsActionFilter and make no real network calls.
+          extract_token() {
+            python3 - "$1" <<'PY'
+          import html
+          import re
+          import sys
+          text = open(sys.argv[1], encoding='utf-8').read()
+          match = re.search(r'name="__RequestVerificationToken"[^>]*value="([^"]+)"', text)
+          if not match:
+              raise SystemExit('Antiforgery token not found')
+          print(html.unescape(match.group(1)))
+          PY
+          }
+
+          EN_TOKEN=$(extract_token _site/Settings/index.html)
+          AR_TOKEN=$(extract_token _site/ar/Settings/index.html)
+
+          snapshot_settings_actions() {
+            local out="$1"
+            local cookie="$2"
+            local token="$3"
+
+            curl -fsS -b "$cookie" \
+              -H "RequestVerificationToken: $token" \
+              -X POST \
+              --data-urlencode "__RequestVerificationToken=$token" \
+              --data-urlencode 'ServerUrl=Demo Server' \
+              --data-urlencode 'RepositoryId=TestEmployee' \
+              --data-urlencode 'ApiBasePath=/DemoApi' \
+              --data-urlencode 'ApiVersion=Demo' \
+              --data-urlencode 'RootEntryId=1' \
+              --data-urlencode 'TimeoutSeconds=30' \
+              'http://127.0.0.1:5055/Settings/TestConnection' \
+              -o "$out/Settings/TestConnection.html"
+
+            curl -fsS -b "$cookie" \
+              -H "RequestVerificationToken: $token" \
+              -X POST \
+              --data-urlencode "__RequestVerificationToken=$token" \
+              --data-urlencode 'ServerUrl=Demo Server' \
+              --data-urlencode 'RepositoryId=TestEmployee' \
+              --data-urlencode 'ApiBasePath=/DemoApi' \
+              'http://127.0.0.1:5055/Settings/DiscoverRepositories' \
+              -o "$out/Settings/DiscoverRepositories.json"
+          }
+
+          snapshot_settings_actions '_site' 'en.cookies' "$EN_TOKEN"
+          snapshot_settings_actions '_site/ar' 'ar.cookies' "$AR_TOKEN"
 
           cp -R src/LFPortal.Web/wwwroot/. _site/
           touch _site/.nojekyll
@@ -101,13 +182,6 @@ jobs:
           document_action_link = re.compile(r'href=(["\'])/Document/[^"\']*\1', re.IGNORECASE)
           root_href = re.compile(r'href=(["\'])/\1')
 
-          blocker = '''
-          <script>
-          // Static design demo: visual only. No backend requests are submitted.
-          document.addEventListener('submit', function (event) { event.preventDefault(); });
-          </script>
-          '''
-
           for path in root.rglob('*.html'):
               rel = path.relative_to(root).as_posix()
               is_ar = rel.startswith('ar/')
@@ -126,26 +200,25 @@ jobs:
 
               text = path.read_text(encoding='utf-8')
 
-              # Published copy is design-only, so remove local/server wording.
+              # Remove machine/server wording from the published design copy only.
               text = text.replace('/LFRepositoryAPI', '/DemoApi')
               text = text.replace('LFRepositoryAPI', 'Demo API')
               text = text.replace('LFDSSTS', 'Demo Auth')
               text = text.replace('Laserfiche Desktop Client', 'Demo Client')
+              text = text.replace('https://lf-server.corp.local', 'Demo Server')
+              text = text.replace('%ProgramData%\\Dashboard\\laserfiche.config.json', 'demo configuration')
 
-              # Language links switch between real static English/Arabic snapshots.
+              # Language switcher uses two real static snapshots.
               text = culture_link.sub(lambda _m: f'href="{other_url}"', text)
               text = old_culture_link.sub(lambda _m: f'href="{other_url}"', text)
 
-              # Probe is a backend diagnostic page. In the static design copy it
-              # safely returns to Dashboard instead of calling a server route.
-              text = probe_link.sub(f'href="{current_prefix}/"', text)
+              # Existing Probe page is snapshotted and remains navigable.
+              text = probe_link.sub(f'href="{current_prefix}/Dashboard/Probe/"', text)
 
-              # ASP.NET generates Dashboard as href="/" because Dashboard is the
-              # default route. On project Pages that would incorrectly leave the
-              # repository and go to amjdkhaled.github.io/. Rewrite it first.
+              # Dashboard is the ASP.NET default route and may render as href="/".
               text = root_href.sub(f'href="{current_prefix}/"', text)
 
-              # Main navigation stays inside the current language snapshot.
+              # Main navigation stays inside the active language snapshot.
               text = text.replace('href="/Dashboard"', f'href="{current_prefix}/"')
               text = text.replace("href='/Dashboard'", f"href='{current_prefix}/'")
               text = text.replace('href="/Archive"', f'href="{current_prefix}/Archive/"')
@@ -155,25 +228,15 @@ jobs:
               text = text.replace('href="/Login"', f'href="{current_prefix}/"')
               text = text.replace("href='/Login'", f"href='{current_prefix}/'")
 
-              # Archive breadcrumb/folder/detail links become static Pages URLs.
+              # Archive navigation becomes static URLs while keeping the original UI.
               text = root_archive_link.sub(f'{current_prefix}/Archive/', text)
               text = folder_link.sub(lambda m: f'{current_prefix}/Archive/folder-{m.group(1)}/', text)
-              text = re.sub(
-                  r'/Archive/Detail\?entryId=\d+',
-                  f'{current_prefix}/Archive/Detail/',
-                  text)
 
-              # The Archive page JavaScript originally fetches the ASP.NET
-              # /Archive/Detail endpoint. Point it at the generated static detail
-              # fragment instead so clicking a document still opens the panel.
-              text = text.replace(
-                  'fetch(`/Archive/Detail?entryId=${entryId}`',
-                  f'fetch(`{current_prefix}/Archive/Detail/`')
-
-              # View/download actions need a backend; keep them visual only.
+              # View/Download require a server-side document stream. Keep the exact
+              # buttons visible but inert in this design-only site.
               text = document_action_link.sub('href="#"', text)
 
-              # Assets are shared at the project Pages root.
+              # Assets are shared by English and Arabic at the Pages project root.
               text = re.sub(r'(src=["\'])/(?!/)', rf'\1{base}/', text)
               text = re.sub(
                   r'(href=["\'])/(css|js|lib|images|img|fonts|favicon)',
@@ -181,48 +244,144 @@ jobs:
                   text,
                   flags=re.IGNORECASE)
 
-              # Backend-only forms stay visual/inert.
+              # Static runtime adapter is inserted before the existing page scripts.
+              # It preserves the original Archive and Settings JavaScript behavior,
+              # but redirects their fetches to files generated above.
+              runtime = f'''
+          <script>
+          (function () {{
+              const staticBase = {current_prefix!r};
+              const nativeFetch = window.fetch.bind(window);
+              window.fetch = function(input, init) {{
+                  const url = typeof input === 'string' ? input : (input && input.url) || '';
+                  const detail = url.match(/^\\/Archive\\/Detail\\?entryId=(\\d+)/i);
+                  if (detail) {{
+                      return nativeFetch(staticBase + '/Archive/Detail/' + detail[1] + '.html', {{ cache: 'no-store' }});
+                  }}
+                  if (/^\\/Settings\\/TestConnection(?:\\?|$)/i.test(url)) {{
+                      return nativeFetch(staticBase + '/Settings/TestConnection.html', {{ cache: 'no-store' }});
+                  }}
+                  if (/^\\/Settings\\/DiscoverRepositories(?:\\?|$)/i.test(url)) {{
+                      return nativeFetch(staticBase + '/Settings/DiscoverRepositories.json', {{ cache: 'no-store' }});
+                  }}
+                  return nativeFetch(input, init);
+              }};
+
+              document.addEventListener('DOMContentLoaded', function () {{
+                  const settingsForm = document.getElementById('settings-form');
+                  if (settingsForm) {{
+                      settingsForm.addEventListener('submit', function (event) {{
+                          event.preventDefault();
+                          window.location.href = staticBase + '/Settings/saved/';
+                      }});
+                  }}
+              }});
+          }})();
+          </script>
+          '''
+
+              if '<head>' in text:
+                  text = text.replace('<head>', '<head>\n' + runtime, 1)
+
+              # Other server-only form actions must never submit to GitHub Pages.
               text = re.sub(r'action=["\'][^"\']*["\']', 'action="#"', text)
 
-              if '/SetCulture' in text:
+              if '/SetCulture?' in text:
                   raise SystemExit(f'Unrewritten culture link in {path}')
-              if '/Dashboard/Probe' in text:
-                  raise SystemExit(f'Unrewritten Probe link in {path}')
-              if 'fetch(`/Archive/Detail?entryId=' in text:
-                  raise SystemExit(f'Unrewritten Archive detail fetch in {path}')
               if root_href.search(text):
                   raise SystemExit(f'Unrewritten root Dashboard href in {path}')
-
-              if '</body>' in text:
-                  text = text.replace('</body>', blocker + '\n</body>')
 
               path.write_text(text, encoding='utf-8')
           PY
 
+          # No real machine/Laserfiche endpoint may appear in published output.
           if grep -RniE 'https?://[^"[:space:]]*(LFRepositoryAPI|LFDSSTS|localhost|127\.0\.0\.1)|desktop-k1svi53|C:\\ProgramData' _site; then
             echo 'Static output contains an actual local or Laserfiche endpoint.'
             exit 1
           fi
 
+          # Core page and interaction checks.
           test -f _site/index.html
           test -f _site/ar/index.html
           test -f _site/Archive/index.html
           test -f _site/ar/Archive/index.html
-          test -f _site/Archive/Detail/index.html
-          test -f _site/ar/Archive/Detail/index.html
+          test -f _site/Dashboard/Probe/index.html
+          test -f _site/ar/Dashboard/Probe/index.html
           test -f _site/Settings/index.html
           test -f _site/ar/Settings/index.html
+          test -f _site/Settings/saved/index.html
+          test -f _site/Settings/TestConnection.html
+          test -f _site/Settings/DiscoverRepositories.json
+
           grep -Fq 'TestEmployee' _site/index.html
           grep -Fq '14 entries' _site/Archive/index.html
+          grep -Fq 'API Diagnostic Probe' _site/Dashboard/Probe/index.html
           grep -Fq 'lang="ar"' _site/ar/index.html
           grep -Fq 'dir="rtl"' _site/ar/index.html
-          grep -Fq '/Dashbord_design/' _site/Archive/index.html
-          grep -Fq '/Dashbord_design/ar/' _site/ar/Archive/index.html
-          grep -Fq '/Dashbord_design/Archive/Detail/' _site/Archive/index.html
-          grep -Fq '/Dashbord_design/ar/Archive/Detail/' _site/ar/Archive/index.html
-          ! grep -Rqi '/SetCulture' _site
-          ! grep -Rqi '/Dashboard/Probe' _site
+          grep -Fq 'Demo Connected' _site/Settings/TestConnection.html
+          grep -Fq 'TestEmployee' _site/Settings/DiscoverRepositories.json
+
+          for id in $DOC_IDS; do
+            test -s "_site/Archive/Detail/$id.html"
+            test -s "_site/ar/Archive/Detail/$id.html"
+          done
+
+          ! grep -Rqi '/SetCulture?' _site
           ! grep -Rqi 'LFRepositoryAPI' _site
+
+          # Crawl every generated href/src and fail the build if a GitHub Pages
+          # navigation/asset target would be missing. This catches 404s before deploy.
+          REPO_NAME="${GITHUB_REPOSITORY#*/}" python3 - <<'PY'
+          import os
+          from html.parser import HTMLParser
+          from pathlib import Path
+          from urllib.parse import urlsplit, unquote
+
+          site = Path('_site').resolve()
+          base = '/' + os.environ['REPO_NAME']
+          errors = []
+
+          class Links(HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.values = []
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  for key in ('href', 'src'):
+                      value = attrs.get(key)
+                      if value:
+                          self.values.append((tag, key, value))
+
+          for html_file in Path('_site').rglob('*.html'):
+              parser = Links()
+              parser.feed(html_file.read_text(encoding='utf-8'))
+              for tag, attr, raw in parser.values:
+                  if raw.startswith(('#', 'mailto:', 'tel:', 'javascript:', 'data:')):
+                      continue
+                  parts = urlsplit(raw)
+                  if parts.scheme or parts.netloc:
+                      continue
+                  path = unquote(parts.path)
+                  if not path:
+                      continue
+                  if path.startswith('/') and not (path == base or path.startswith(base + '/')):
+                      errors.append(f'{html_file}: escapes Pages project: {raw}')
+                      continue
+                  if not path.startswith(base):
+                      continue
+
+                  rel = path[len(base):].lstrip('/')
+                  target = site / rel
+                  if path.endswith('/') or not target.suffix:
+                      target = target / 'index.html'
+                  if not target.exists():
+                      errors.append(f'{html_file}: missing target for {raw} -> {target}')
+
+          if errors:
+              print('\n'.join(errors))
+              raise SystemExit(f'{len(errors)} broken static links/assets found')
+          print('Static link audit passed.')
+          PY
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
