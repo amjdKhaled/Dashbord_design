@@ -55,7 +55,6 @@ jobs:
           done
           test "$ready" = 1
 
-          # Create culture cookies once while the ASP.NET demo is running.
           curl -fsS -c en.cookies \
             'http://127.0.0.1:5055/SetCulture?culture=en&returnUrl=%2FDashboard' \
             -o /dev/null
@@ -81,7 +80,6 @@ jobs:
             done
           }
 
-          # English remains the default Pages URL; Arabic lives under /ar/.
           snapshot '_site' 'en.cookies'
           snapshot '_site/ar' 'ar.cookies'
 
@@ -99,6 +97,7 @@ jobs:
           root_archive_link = re.compile(r'/Archive\?entryId=1(?:&amp;|&)[^"\']*')
           culture_link = re.compile(r'href=(["\'])(/SetCulture\?[^"\']*)\1', re.IGNORECASE)
           old_culture_link = re.compile(r'href=(["\'])(/Home/SetLanguage[^"\']*)\1', re.IGNORECASE)
+          root_href = re.compile(r'href=(["\'])/\1')
 
           blocker = '''
           <script>
@@ -125,16 +124,20 @@ jobs:
 
               text = path.read_text(encoding='utf-8')
 
-              # Replace backend-specific wording in the published design snapshot only.
+              # Published copy is design-only, so remove local/server wording.
               text = text.replace('/LFRepositoryAPI', '/DemoApi')
               text = text.replace('LFRepositoryAPI', 'Demo API')
               text = text.replace('LFDSSTS', 'Demo Auth')
               text = text.replace('Laserfiche Desktop Client', 'Demo Client')
 
-              # The language button must switch between two real static snapshots,
-              # not call the ASP.NET /SetCulture endpoint on GitHub Pages.
+              # Language links switch between real static English/Arabic snapshots.
               text = culture_link.sub(lambda _m: f'href="{other_url}"', text)
               text = old_culture_link.sub(lambda _m: f'href="{other_url}"', text)
+
+              # ASP.NET generates Dashboard as href="/" because Dashboard is the
+              # default route. On project Pages that would incorrectly leave the
+              # repository and go to amjdkhaled.github.io/. Rewrite it first.
+              text = root_href.sub(f'href="{current_prefix}/"', text)
 
               # Main navigation stays inside the current language snapshot.
               text = text.replace('href="/Dashboard"', f'href="{current_prefix}/"')
@@ -146,17 +149,15 @@ jobs:
               text = text.replace('href="/Login"', f'href="{current_prefix}/"')
               text = text.replace("href='/Login'", f"href='{current_prefix}/'")
 
-              # Archive breadcrumb and folder links become real static pages.
+              # Archive breadcrumb/folder/detail links become static Pages URLs.
               text = root_archive_link.sub(f'{current_prefix}/Archive/', text)
               text = folder_link.sub(lambda m: f'{current_prefix}/Archive/folder-{m.group(1)}/', text)
-
-              # Document detail is represented by one static sample detail page.
               text = re.sub(
                   r'/Archive/Detail\?entryId=\d+',
                   f'{current_prefix}/Archive/Detail/',
                   text)
 
-              # Assets are shared by both languages at the project Pages root.
+              # Assets are shared at the project Pages root.
               text = re.sub(r'(src=["\'])/(?!/)', rf'\1{base}/', text)
               text = re.sub(
                   r'(href=["\'])/(css|js|lib|images|img|fonts|favicon)',
@@ -164,8 +165,13 @@ jobs:
                   text,
                   flags=re.IGNORECASE)
 
-              # Backend-only forms stay visual/inert in the design demo.
+              # Backend-only forms stay visual/inert.
               text = re.sub(r'action=["\'][^"\']*["\']', 'action="#"', text)
+
+              if '/SetCulture' in text:
+                  raise SystemExit(f'Unrewritten culture link in {path}')
+              if root_href.search(text):
+                  raise SystemExit(f'Unrewritten root Dashboard href in {path}')
 
               if '</body>' in text:
                   text = text.replace('</body>', blocker + '\n</body>')
@@ -173,7 +179,6 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-          # Fail only for actual local/server endpoint references.
           if grep -RniE 'https?://[^"[:space:]]*(LFRepositoryAPI|LFDSSTS|localhost|127\.0\.0\.1)|desktop-k1svi53|C:\\ProgramData' _site; then
             echo 'Static output contains an actual local or Laserfiche endpoint.'
             exit 1
@@ -189,8 +194,8 @@ jobs:
           grep -Fq '14 entries' _site/Archive/index.html
           grep -Fq 'lang="ar"' _site/ar/index.html
           grep -Fq 'dir="rtl"' _site/ar/index.html
-          grep -Fq '/Dashbord_design/ar/' _site/index.html
-          grep -Fq '/Dashbord_design/' _site/ar/index.html
+          grep -Fq '/Dashbord_design/' _site/Archive/index.html
+          grep -Fq '/Dashbord_design/ar/' _site/ar/Archive/index.html
           ! grep -Rqi '/SetCulture' _site
           ! grep -Rqi 'LFRepositoryAPI' _site
 
