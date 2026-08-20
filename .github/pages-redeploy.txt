@@ -1,0 +1,2 @@
+Force GitHub Pages redeploy after static Arabic language routing fix.
+Generated: 2026-08-20
