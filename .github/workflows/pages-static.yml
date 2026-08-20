@@ -77,9 +77,6 @@ jobs:
               -o "$out/Archive/index.html"
             curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Dashboard/Probe' \
               -o "$out/Dashboard/Probe/index.html"
-
-            # Keep the antiforgery cookie emitted by the Settings page so the
-            # existing demo-safe POST actions can be snapshotted too.
             curl -fsS -b "$cookie" -c "$cookie" 'http://127.0.0.1:5055/Settings' \
               -o "$out/Settings/index.html"
             curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Settings?saved=true' \
@@ -96,10 +93,6 @@ jobs:
           snapshot '_site' 'en.cookies'
           snapshot '_site/ar' 'ar.cookies'
 
-          # Preserve the existing Archive detail-panel behavior exactly: every
-          # document shown by the mock archive gets its own static partial. The
-          # browser will fetch the matching partial by entry ID instead of calling
-          # ASP.NET at runtime.
           DOC_IDS=$(grep -RhoE 'data-entry-id="[0-9]+"' \
             _site/Archive/index.html _site/Archive/folder-*/index.html \
             | grep -oE '[0-9]+' | sort -nu | tr '\n' ' ')
@@ -114,8 +107,6 @@ jobs:
               -o "_site/ar/Archive/Detail/$id.html"
           done
 
-          # Snapshot the two existing Settings AJAX actions. They are already
-          # intercepted by DemoSettingsActionFilter and make no real network calls.
           extract_token() {
             python3 - "$1" <<'PY'
           import html
@@ -200,7 +191,6 @@ jobs:
 
               text = path.read_text(encoding='utf-8')
 
-              # Remove machine/server wording from the published design copy only.
               text = text.replace('/LFRepositoryAPI', '/DemoApi')
               text = text.replace('LFRepositoryAPI', 'Demo API')
               text = text.replace('LFDSSTS', 'Demo Auth')
@@ -208,17 +198,11 @@ jobs:
               text = text.replace('https://lf-server.corp.local', 'Demo Server')
               text = text.replace('%ProgramData%\\Dashboard\\laserfiche.config.json', 'demo configuration')
 
-              # Language switcher uses two real static snapshots.
               text = culture_link.sub(lambda _m: f'href="{other_url}"', text)
               text = old_culture_link.sub(lambda _m: f'href="{other_url}"', text)
-
-              # Existing Probe page is snapshotted and remains navigable.
               text = probe_link.sub(f'href="{current_prefix}/Dashboard/Probe/"', text)
-
-              # Dashboard is the ASP.NET default route and may render as href="/".
               text = root_href.sub(f'href="{current_prefix}/"', text)
 
-              # Main navigation stays inside the active language snapshot.
               text = text.replace('href="/Dashboard"', f'href="{current_prefix}/"')
               text = text.replace("href='/Dashboard'", f"href='{current_prefix}/'")
               text = text.replace('href="/Archive"', f'href="{current_prefix}/Archive/"')
@@ -228,15 +212,10 @@ jobs:
               text = text.replace('href="/Login"', f'href="{current_prefix}/"')
               text = text.replace("href='/Login'", f"href='{current_prefix}/'")
 
-              # Archive navigation becomes static URLs while keeping the original UI.
               text = root_archive_link.sub(f'{current_prefix}/Archive/', text)
               text = folder_link.sub(lambda m: f'{current_prefix}/Archive/folder-{m.group(1)}/', text)
-
-              # View/Download require a server-side document stream. Keep the exact
-              # buttons visible but inert in this design-only site.
               text = document_action_link.sub('href="#"', text)
 
-              # Assets are shared by English and Arabic at the Pages project root.
               text = re.sub(r'(src=["\'])/(?!/)', rf'\1{base}/', text)
               text = re.sub(
                   r'(href=["\'])/(css|js|lib|images|img|fonts|favicon)',
@@ -244,26 +223,31 @@ jobs:
                   text,
                   flags=re.IGNORECASE)
 
-              # Static runtime adapter is inserted before the existing page scripts.
-              # It preserves the original Archive and Settings JavaScript behavior,
-              # but redirects their fetches to files generated above.
               runtime = f'''
           <script>
           (function () {{
               const staticBase = {current_prefix!r};
               const nativeFetch = window.fetch.bind(window);
+
               window.fetch = function(input, init) {{
                   const url = typeof input === 'string' ? input : (input && input.url) || '';
-                  const detail = url.match(/^\\/Archive\\/Detail\\?entryId=(\\d+)/i);
-                  if (detail) {{
-                      return nativeFetch(staticBase + '/Archive/Detail/' + detail[1] + '.html', {{ cache: 'no-store' }});
+
+                  if (url.indexOf('/Archive/Detail?entryId=') === 0) {{
+                      const params = new URL(url, window.location.origin).searchParams;
+                      const entryId = params.get('entryId');
+                      if (entryId) {{
+                          return nativeFetch(staticBase + '/Archive/Detail/' + entryId + '.html', {{ cache: 'no-store' }});
+                      }}
                   }}
-                  if (/^\\/Settings\\/TestConnection(?:\\?|$)/i.test(url)) {{
+
+                  if (url.indexOf('/Settings/TestConnection') === 0) {{
                       return nativeFetch(staticBase + '/Settings/TestConnection.html', {{ cache: 'no-store' }});
                   }}
-                  if (/^\\/Settings\\/DiscoverRepositories(?:\\?|$)/i.test(url)) {{
+
+                  if (url.indexOf('/Settings/DiscoverRepositories') === 0) {{
                       return nativeFetch(staticBase + '/Settings/DiscoverRepositories.json', {{ cache: 'no-store' }});
                   }}
+
                   return nativeFetch(input, init);
               }};
 
@@ -283,7 +267,6 @@ jobs:
               if '<head>' in text:
                   text = text.replace('<head>', '<head>\n' + runtime, 1)
 
-              # Other server-only form actions must never submit to GitHub Pages.
               text = re.sub(r'action=["\'][^"\']*["\']', 'action="#"', text)
 
               if '/SetCulture?' in text:
@@ -294,13 +277,11 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-          # No real machine/Laserfiche endpoint may appear in published output.
           if grep -RniE 'https?://[^"[:space:]]*(LFRepositoryAPI|LFDSSTS|localhost|127\.0\.0\.1)|desktop-k1svi53|C:\\ProgramData' _site; then
             echo 'Static output contains an actual local or Laserfiche endpoint.'
             exit 1
           fi
 
-          # Core page and interaction checks.
           test -f _site/index.html
           test -f _site/ar/index.html
           test -f _site/Archive/index.html
@@ -329,8 +310,6 @@ jobs:
           ! grep -Rqi '/SetCulture?' _site
           ! grep -Rqi 'LFRepositoryAPI' _site
 
-          # Crawl every generated href/src and fail the build if a GitHub Pages
-          # navigation/asset target would be missing. This catches 404s before deploy.
           REPO_NAME="${GITHUB_REPOSITORY#*/}" python3 - <<'PY'
           import os
           from html.parser import HTMLParser
