@@ -97,6 +97,8 @@ jobs:
           root_archive_link = re.compile(r'/Archive\?entryId=1(?:&amp;|&)[^"\']*')
           culture_link = re.compile(r'href=(["\'])(/SetCulture\?[^"\']*)\1', re.IGNORECASE)
           old_culture_link = re.compile(r'href=(["\'])(/Home/SetLanguage[^"\']*)\1', re.IGNORECASE)
+          probe_link = re.compile(r'href=(["\'])/Dashboard/Probe\1', re.IGNORECASE)
+          document_action_link = re.compile(r'href=(["\'])/Document/[^"\']*\1', re.IGNORECASE)
           root_href = re.compile(r'href=(["\'])/\1')
 
           blocker = '''
@@ -134,6 +136,10 @@ jobs:
               text = culture_link.sub(lambda _m: f'href="{other_url}"', text)
               text = old_culture_link.sub(lambda _m: f'href="{other_url}"', text)
 
+              # Probe is a backend diagnostic page. In the static design copy it
+              # safely returns to Dashboard instead of calling a server route.
+              text = probe_link.sub(f'href="{current_prefix}/"', text)
+
               # ASP.NET generates Dashboard as href="/" because Dashboard is the
               # default route. On project Pages that would incorrectly leave the
               # repository and go to amjdkhaled.github.io/. Rewrite it first.
@@ -157,6 +163,16 @@ jobs:
                   f'{current_prefix}/Archive/Detail/',
                   text)
 
+              # The Archive page JavaScript originally fetches the ASP.NET
+              # /Archive/Detail endpoint. Point it at the generated static detail
+              # fragment instead so clicking a document still opens the panel.
+              text = text.replace(
+                  'fetch(`/Archive/Detail?entryId=${entryId}`',
+                  f'fetch(`{current_prefix}/Archive/Detail/`')
+
+              # View/download actions need a backend; keep them visual only.
+              text = document_action_link.sub('href="#"', text)
+
               # Assets are shared at the project Pages root.
               text = re.sub(r'(src=["\'])/(?!/)', rf'\1{base}/', text)
               text = re.sub(
@@ -170,6 +186,10 @@ jobs:
 
               if '/SetCulture' in text:
                   raise SystemExit(f'Unrewritten culture link in {path}')
+              if '/Dashboard/Probe' in text:
+                  raise SystemExit(f'Unrewritten Probe link in {path}')
+              if 'fetch(`/Archive/Detail?entryId=' in text:
+                  raise SystemExit(f'Unrewritten Archive detail fetch in {path}')
               if root_href.search(text):
                   raise SystemExit(f'Unrewritten root Dashboard href in {path}')
 
@@ -188,6 +208,8 @@ jobs:
           test -f _site/ar/index.html
           test -f _site/Archive/index.html
           test -f _site/ar/Archive/index.html
+          test -f _site/Archive/Detail/index.html
+          test -f _site/ar/Archive/Detail/index.html
           test -f _site/Settings/index.html
           test -f _site/ar/Settings/index.html
           grep -Fq 'TestEmployee' _site/index.html
@@ -196,7 +218,10 @@ jobs:
           grep -Fq 'dir="rtl"' _site/ar/index.html
           grep -Fq '/Dashbord_design/' _site/Archive/index.html
           grep -Fq '/Dashbord_design/ar/' _site/ar/Archive/index.html
+          grep -Fq '/Dashbord_design/Archive/Detail/' _site/Archive/index.html
+          grep -Fq '/Dashbord_design/ar/Archive/Detail/' _site/ar/Archive/index.html
           ! grep -Rqi '/SetCulture' _site
+          ! grep -Rqi '/Dashboard/Probe' _site
           ! grep -Rqi 'LFRepositoryAPI' _site
 
       - name: Upload Pages artifact
