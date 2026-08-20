@@ -30,7 +30,7 @@ jobs:
       - name: Build demo app
         run: dotnet build src/LFPortal.Web/LFPortal.Web.csproj --configuration Release
 
-      - name: Generate static design snapshot
+      - name: Generate English and Arabic static design snapshots
         shell: bash
         run: |
           set -euo pipefail
@@ -55,17 +55,35 @@ jobs:
           done
           test "$ready" = 1
 
-          mkdir -p _site/Archive/Detail _site/Settings
-          curl -fsS 'http://127.0.0.1:5055/Dashboard' -o _site/index.html
-          curl -fsS 'http://127.0.0.1:5055/Archive' -o _site/Archive/index.html
-          curl -fsS 'http://127.0.0.1:5055/Archive/Detail?entryId=9001' -o _site/Archive/Detail/index.html
-          curl -fsS 'http://127.0.0.1:5055/Settings' -o _site/Settings/index.html
+          # Create culture cookies once while the ASP.NET demo is running.
+          curl -fsS -c en.cookies \
+            'http://127.0.0.1:5055/SetCulture?culture=en&returnUrl=%2FDashboard' \
+            -o /dev/null
+          curl -fsS -c ar.cookies \
+            'http://127.0.0.1:5055/SetCulture?culture=ar&returnUrl=%2FDashboard' \
+            -o /dev/null
 
-          for id in 100 101 102 103 104 105 106 107; do
-            mkdir -p "_site/Archive/folder-$id"
-            curl -fsS "http://127.0.0.1:5055/Archive?entryId=$id&trail=1%3ARepository" \
-              -o "_site/Archive/folder-$id/index.html"
-          done
+          snapshot() {
+            local out="$1"
+            local cookie="$2"
+
+            mkdir -p "$out/Archive/Detail" "$out/Settings"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Dashboard' -o "$out/index.html"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Archive' -o "$out/Archive/index.html"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Archive/Detail?entryId=9001' -o "$out/Archive/Detail/index.html"
+            curl -fsS -b "$cookie" 'http://127.0.0.1:5055/Settings' -o "$out/Settings/index.html"
+
+            for id in 100 101 102 103 104 105 106 107; do
+              mkdir -p "$out/Archive/folder-$id"
+              curl -fsS -b "$cookie" \
+                "http://127.0.0.1:5055/Archive?entryId=$id&trail=1%3ARepository" \
+                -o "$out/Archive/folder-$id/index.html"
+            done
+          }
+
+          # English remains the default Pages URL; Arabic lives under /ar/.
+          snapshot '_site' 'en.cookies'
+          snapshot '_site/ar' 'ar.cookies'
 
           cp -R src/LFPortal.Web/wwwroot/. _site/
           touch _site/.nojekyll
@@ -78,6 +96,9 @@ jobs:
           root = Path('_site')
           base = '/' + os.environ['REPO_NAME']
           folder_link = re.compile(r'/Archive\?entryId=(10[0-7])(?:&amp;|&)trail=[^"\']*')
+          root_archive_link = re.compile(r'/Archive\?entryId=1(?:&amp;|&)[^"\']*')
+          culture_link = re.compile(r'href=(["\'])(/SetCulture\?[^"\']*)\1', re.IGNORECASE)
+          old_culture_link = re.compile(r'href=(["\'])(/Home/SetLanguage[^"\']*)\1', re.IGNORECASE)
 
           blocker = '''
           <script>
@@ -87,6 +108,21 @@ jobs:
           '''
 
           for path in root.rglob('*.html'):
+              rel = path.relative_to(root).as_posix()
+              is_ar = rel.startswith('ar/')
+              logical = rel[3:] if is_ar else rel
+
+              if logical == 'index.html':
+                  suffix = ''
+              elif logical.endswith('index.html'):
+                  suffix = logical[:-len('index.html')]
+              else:
+                  suffix = logical
+
+              current_prefix = f'{base}/ar' if is_ar else base
+              other_prefix = base if is_ar else f'{base}/ar'
+              other_url = f'{other_prefix}/{suffix}' if suffix else f'{other_prefix}/'
+
               text = path.read_text(encoding='utf-8')
 
               # Replace backend-specific wording in the published design snapshot only.
@@ -95,23 +131,32 @@ jobs:
               text = text.replace('LFDSSTS', 'Demo Auth')
               text = text.replace('Laserfiche Desktop Client', 'Demo Client')
 
-              # Main navigation between the static design pages.
-              text = text.replace('href="/Dashboard"', f'href="{base}/"')
-              text = text.replace("href='/Dashboard'", f"href='{base}/'")
-              text = text.replace('href="/Archive"', f'href="{base}/Archive/"')
-              text = text.replace("href='/Archive'", f"href='{base}/Archive/'")
-              text = text.replace('href="/Settings"', f'href="{base}/Settings/"')
-              text = text.replace("href='/Settings'", f"href='{base}/Settings/'")
-              text = text.replace('href="/Login"', f'href="{base}/"')
-              text = text.replace("href='/Login'", f"href='{base}/'")
+              # The language button must switch between two real static snapshots,
+              # not call the ASP.NET /SetCulture endpoint on GitHub Pages.
+              text = culture_link.sub(lambda _m: f'href="{other_url}"', text)
+              text = old_culture_link.sub(lambda _m: f'href="{other_url}"', text)
 
-              # Archive folder links become real static pages.
-              text = folder_link.sub(lambda m: f'{base}/Archive/folder-{m.group(1)}/', text)
+              # Main navigation stays inside the current language snapshot.
+              text = text.replace('href="/Dashboard"', f'href="{current_prefix}/"')
+              text = text.replace("href='/Dashboard'", f"href='{current_prefix}/'")
+              text = text.replace('href="/Archive"', f'href="{current_prefix}/Archive/"')
+              text = text.replace("href='/Archive'", f"href='{current_prefix}/Archive/'")
+              text = text.replace('href="/Settings"', f'href="{current_prefix}/Settings/"')
+              text = text.replace("href='/Settings'", f"href='{current_prefix}/Settings/'")
+              text = text.replace('href="/Login"', f'href="{current_prefix}/"')
+              text = text.replace("href='/Login'", f"href='{current_prefix}/'")
+
+              # Archive breadcrumb and folder links become real static pages.
+              text = root_archive_link.sub(f'{current_prefix}/Archive/', text)
+              text = folder_link.sub(lambda m: f'{current_prefix}/Archive/folder-{m.group(1)}/', text)
 
               # Document detail is represented by one static sample detail page.
-              text = re.sub(r'/Archive/Detail\?entryId=\d+', f'{base}/Archive/Detail/', text)
+              text = re.sub(
+                  r'/Archive/Detail\?entryId=\d+',
+                  f'{current_prefix}/Archive/Detail/',
+                  text)
 
-              # Static assets need the project Pages base path. Route links above are left untouched.
+              # Assets are shared by both languages at the project Pages root.
               text = re.sub(r'(src=["\'])/(?!/)', rf'\1{base}/', text)
               text = re.sub(
                   r'(href=["\'])/(css|js|lib|images|img|fonts|favicon)',
@@ -119,9 +164,8 @@ jobs:
                   text,
                   flags=re.IGNORECASE)
 
-              # Backend-only controls are visual in the static design demo.
+              # Backend-only forms stay visual/inert in the design demo.
               text = re.sub(r'action=["\'][^"\']*["\']', 'action="#"', text)
-              text = re.sub(r'href=["\']/Home/SetLanguage[^"\']*["\']', 'href="#"', text)
 
               if '</body>' in text:
                   text = text.replace('</body>', blocker + '\n</body>')
@@ -129,18 +173,25 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-          # Fail only for actual local/server endpoint references, not harmless explanatory text.
+          # Fail only for actual local/server endpoint references.
           if grep -RniE 'https?://[^"[:space:]]*(LFRepositoryAPI|LFDSSTS|localhost|127\.0\.0\.1)|desktop-k1svi53|C:\\ProgramData' _site; then
             echo 'Static output contains an actual local or Laserfiche endpoint.'
             exit 1
           fi
 
           test -f _site/index.html
+          test -f _site/ar/index.html
           test -f _site/Archive/index.html
+          test -f _site/ar/Archive/index.html
           test -f _site/Settings/index.html
+          test -f _site/ar/Settings/index.html
           grep -Fq 'TestEmployee' _site/index.html
           grep -Fq '14 entries' _site/Archive/index.html
-          grep -Fq '/Dashbord_design/' _site/index.html
+          grep -Fq 'lang="ar"' _site/ar/index.html
+          grep -Fq 'dir="rtl"' _site/ar/index.html
+          grep -Fq '/Dashbord_design/ar/' _site/index.html
+          grep -Fq '/Dashbord_design/' _site/ar/index.html
+          ! grep -Rqi '/SetCulture' _site
           ! grep -Rqi 'LFRepositoryAPI' _site
 
       - name: Upload Pages artifact
