@@ -18,8 +18,9 @@ internal sealed class DemoRouteSafetyMiddleware
             return;
         }
 
-        if (path.StartsWithSegments("/Dashboard/Probe") ||
-            path.StartsWithSegments("/Document") ||
+        // Probe is now a mock-only page and is intentionally reachable.
+        // Real document/share/API routes remain blocked in this standalone demo.
+        if (path.StartsWithSegments("/Document") ||
             path.StartsWithSegments("/Share") ||
             path.StartsWithSegments("/LaserficheApi") ||
             path.StartsWithSegments("/api"))
@@ -28,8 +29,6 @@ internal sealed class DemoRouteSafetyMiddleware
             return;
         }
 
-        // Set a deterministic demo repository/source so the existing header renders
-        // the same repository badge and DESKTOP source badge without a real client launch.
         context.Session.SetString("ActiveRepositoryId", DemoDataStore.RepositoryId);
         context.Session.SetString("ActiveRepositorySource", "Laserfiche Desktop Client");
 
