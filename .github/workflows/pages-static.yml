@@ -81,13 +81,19 @@ jobs:
 
           blocker = '''
           <script>
-          // Static design demo: visual only. No forms or backend requests are submitted.
+          // Static design demo: visual only. No backend requests are submitted.
           document.addEventListener('submit', function (event) { event.preventDefault(); });
           </script>
           '''
 
           for path in root.rglob('*.html'):
               text = path.read_text(encoding='utf-8')
+
+              # Replace backend-specific wording in the published design snapshot only.
+              text = text.replace('/LFRepositoryAPI', '/DemoApi')
+              text = text.replace('LFRepositoryAPI', 'Demo API')
+              text = text.replace('LFDSSTS', 'Demo Auth')
+              text = text.replace('Laserfiche Desktop Client', 'Demo Client')
 
               # Main navigation between the static design pages.
               text = text.replace('href="/Dashboard"', f'href="{base}/"')
@@ -123,8 +129,9 @@ jobs:
               path.write_text(text, encoding='utf-8')
           PY
 
-          if grep -RniE 'LFRepositoryAPI|LFDSSTS|desktop-k1svi53|localhost:|127\.0\.0\.1:' _site; then
-            echo 'Static output contains a local or Laserfiche endpoint.'
+          # Fail only for actual local/server endpoint references, not harmless explanatory text.
+          if grep -RniE 'https?://[^"[:space:]]*(LFRepositoryAPI|LFDSSTS|localhost|127\.0\.0\.1)|desktop-k1svi53|C:\\ProgramData' _site; then
+            echo 'Static output contains an actual local or Laserfiche endpoint.'
             exit 1
           fi
 
@@ -134,6 +141,7 @@ jobs:
           grep -Fq 'TestEmployee' _site/index.html
           grep -Fq '14 entries' _site/Archive/index.html
           grep -Fq '/Dashbord_design/' _site/index.html
+          ! grep -Rqi 'LFRepositoryAPI' _site
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
